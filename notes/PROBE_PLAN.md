@@ -11,6 +11,10 @@
 - 对照 B：续训各中间 checkpoint（`eval/<iter>/teacher_checkpoint.pth`，如 5k、10k 步）
 - 判定标准：frozen probe 指标随 SSL 步数的**方向与一致性**；SSL 训练 loss 不作为成功指标。
 - 公平性铁律：A/B 用**同一脚本、同一 seed、同一分辨率、同一 probe 超参**，只换 backbone 权重；评测集固定 `nuImages v1.0-val`。
+- 备注（已核实）：官方 `v1.0-test` 的 object/surface 标注为空数组，无有监督评测价值，故全方案只用 train/val。
+- 数据口径（铁律）：所有指标、特征提取只用 `CAM_FRONT` 关键帧（单目），sweeps 与其他视角不参与。
+- 规模口径（已实测）：sample（场景时间戳）数 ≠ CAM_FRONT 图像数；`key_camera_token` 为 6 相机轮换。
+  v1.0-train / val / test 的 CAM_FRONT 关键帧分别为 **13,187 / 3,249 / 1,932** 张（mini 为 8 张）。
 
 ## 1. 指标与协议（预注册，写死，不事后改）
 
@@ -41,13 +45,27 @@
 
 ### 统一协议
 ```
-输入分辨率: 512×512
+输入分辨率: 短边 resize 512（等比, BICUBIC）→ CenterCrop 512×512
+            （对齐官方 make_classification_eval_transform 语义；原图 1600×900 → 910×512 → 裁 512×512）
 特征层: backbone 最后一层 patch tokens（norm 后）
 head: Linear（主指标）/ MLP-256（辅助，可选）
 优化器: Adam, lr=1e-3, weight_decay=0
 训练: 10 epochs, batch_size=64, seed=0
 评测: v1.0-val, 单尺度
 ```
+
+### 分辨率与几何变换协议（复现必需，写死）
+
+| 环节 | 值 | 说明 |
+| --- | --- | --- |
+| 数据集原始分辨率 | 1600×900 | nuImages 固定，16:9 宽幅 |
+| SSL 续训输入 | global 256×256 / local 112×112 | RandomResizedCrop（随机裁方形），官方配方 |
+| Probe 输入 | 短边 resize 512（等比, BICUBIC）→ CenterCrop 512×512 | 非拉伸；对齐官方 eval transform 语义 |
+| Probe 特征图 | 32×32 | 512/16 |
+| mask / bbox 对齐 | 与图像同一变换 | 短边 512 + 中心裁剪，坐标相应变换，否则错位 |
+
+注意：1600×900 是宽幅，方形 crop 会丢失左右视野（910×512 → 裁 512×512 丢左右各约 199px）；
+该事实用于解释指标，A/B 必须使用完全相同的变换。
 
 ## 2. 数据层（字段已在本机 nuImages mini 实测确认）
 
