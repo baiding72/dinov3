@@ -15,6 +15,7 @@
 - 数据口径（铁律）：所有指标、特征提取只用 `CAM_FRONT` 关键帧（单目），sweeps 与其他视角不参与。
 - 规模口径（已实测）：sample（场景时间戳）数 ≠ CAM_FRONT 图像数；`key_camera_token` 为 6 相机轮换。
   v1.0-train / val / test 的 CAM_FRONT 关键帧分别为 **13,187 / 3,249 / 1,932** 张（mini 为 8 张）。
+- 执行顺序（铁律）：先完成 §2 指标修复与验证，再进入完整 A/B 流程；尺子可信之前不下任何实验结论。
 
 ## 1. 指标与协议（预注册，写死，不事后改）
 
@@ -67,7 +68,55 @@ head: Linear（主指标）/ MLP-256（辅助，可选）
 注意：1600×900 是宽幅，方形 crop 会丢失左右视野（910×512 → 裁 512×512 丢左右各约 199px）；
 该事实用于解释指标，A/B 必须使用完全相同的变换。
 
-## 2. 数据层（字段已在本机 nuImages mini 实测确认）
+## 2. 指标修复与验证（P0，先做，不需要新训练）
+
+背景：v1 三个指标全线下滑，但 **baseline 本身不可信**——官方 drivable IoU=0.0168 明显低于合理水平
+（drivable 通常占画面 20~40%），怀疑实现 bug；object top-1=0.857 需对照多数类基线。
+**先修尺子，再谈 A/B。** 本步只使用现有 checkpoint（官方权重 + v1 全量断点 7999/8999/9999），
+不启动任何新训练。
+
+### 2.1 指标 1（drivable IoU）修复清单
+
+- **可视化三重校验**（输出 `<output>/probe_debug/`，每步抽查 10 张）：
+  1. 原图 + 解码后 mask 叠加（1600×900 原始坐标，验证 RLE 解码）；
+  2. 512 变换后图像 + mask 叠加（验证短边 resize + CenterCrop 与图像一致）；
+  3. 32×32 特征网格 + 下采样 mask 叠加（画网格线，验证 mask 与特征网格对齐）。
+- **RLE 解码**：`counts` 是 base64 字符串，必须先 `base64.b64decode` 再 `maskUtils.decode`；
+  或直接用 devkit `from nuimages.utils.utils import mask_decode`（内部已封装）。
+- **category 过滤**：只留 `category_name == "flat.driveable_surface"`；`vehicle.ego` 必须排除。
+- **同帧多条记录**：同一关键帧（sample_data_token）的多条 drivable mask 用 **OR 合并**成一张二值图。
+- **mask 下采样到 32×32**：与图像同一几何变换后，用面积平均（area-average）或与 patch 网格严格对齐的方式；
+  禁止用会引入半像素偏移的 resize。
+- **指标输出**：IoU + F1 + PR 一起报，不能只报 IoU。
+- **验收**：官方 baseline 必须显著高于 0.0168；若修复后仍 <0.1，继续排查：
+  特征层选择（是否末层 norm 后）、checkpoint 加载（teacher vs student、`backbone.` 前缀）。
+
+### 2.2 指标 2（object top-1）补基线
+
+- 输出 train/val 的 8 大类分布表；
+- 输出"全猜多数类"基线 top-1（与官方 0.857 对照，判断该数字是否有信息量）；
+- 输出 **per-class accuracy + balanced accuracy**，禁止只报全局 top-1；
+- bbox→patch 选择可视化：原图 + bbox 框 + 被选中 patch 网格标亮，抽查 10 张；
+- 验收：能明确回答"官方 0.857 是否等于多数类基线"。
+
+### 2.3 指标 3（CLS mAP）补细节
+
+- 确认多热标签 = 该关键帧（channel==CAM_FRONT 且 is_key_frame）内 object_ann 全部类别聚合；
+- 输出 **per-class AP 表**，不只看均值；
+- 验收：与已测 v1 值 0.678 / 0.574 一致，即认为实现正确，无需大改。
+
+### 2.4 修复后重测与决策闸门
+
+- 用修复后**同一管线**重测：官方权重 + v1 的 7999/8999/9999
+  （从全量断点提取 EMA teacher backbone，沿用现有可读 v1 断点的加载方式）；
+- 填 §6 结果表模板，并输出**修复前后 baseline 对比**（旧 drivable IoU=0.0168 vs 新值）；
+- 判定：
+  - 三个指标仍全线下滑（指标 1 用修好的值）→ 结论成立：无锚 SSL 续训退化特征 →
+    v2 上 GRAM anchoring + 步数压到 5k + 降有效 LR；
+  - 下滑大幅缩水或消失 → v1 结论改写，v2 设计重排；
+- 产出：每步可视化图 + 修复前后对比表。
+
+## 3. 数据层（字段已在本机 nuImages mini 实测确认）
 
 ### nuImages 目录结构
 ```
@@ -106,13 +155,14 @@ sensor.json  → channel("CAM_FRONT" ...)
 - `category.json` 提供 `name`（8 大类）
 - 标注按 `sample_data_token` 与关键帧对齐
 
-## 3. 代码结构（新建，位于 `dinov3/eval/nuimages/`）
+## 4. 代码结构（新建，位于 `dinov3/eval/nuimages/`）
 
 ```
 dinov3/eval/nuimages/
 ├── __init__.py
 ├── config.py            # 协议常量（分辨率/超参/路径），A/B 共用
 ├── data.py              # NuImagesProbeDataset
+├── debug_vis.py         # 指标修复可视化（§2.1/2.2 的三重校验与 bbox→patch 抽查）
 ├── extract_features.py  # 冻结 backbone 提取并缓存特征（每 checkpoint 一次）
 ├── drivable_probe.py    # 指标 1
 ├── object_probe.py      # 指标 2
@@ -141,7 +191,9 @@ dinov3/eval/nuimages/
 - 输出：IoU/F1（指标 1）、top-1 acc（指标 2）、mAP（指标 3），打印到 stdout + 写 json
 - 命令行参数：`--features-dir`、`--split VAL`、`--seed 0` 等；A/B 只换 `--features-dir`
 
-## 4. 执行步骤
+## 5. 执行步骤
+
+> 入口：先完成 §2 指标修复与验证（尺子可信），再执行以下完整流程。
 
 1. **数据层 + 可视化**：实现 `data.py`，输出 2–3 张"原图 + drivable mask 叠加"和"原图 + bbox 叠加"图，验证 RLE 解码与坐标对齐；统计 CAM_FRONT 关键帧的标注覆盖数（train/val 各多少带 surface/object 标注）
 2. **特征提取**：`extract_features.py` 对 A（raw）+ B（5k、10k）各提取一次
@@ -150,7 +202,7 @@ dinov3/eval/nuimages/
 5. **产出**：结果表 + 曲线（IoU / top-1 / mAP vs SSL steps，0 步 = A）
 6. **Gate 分析**：看两条指标的方向与中间点一致性
 
-## 5. 结果表模板
+## 6. 结果表模板
 
 ```
 Model                     Drivable IoU ↑    Object top-1 ↑    CLS mAP ↑
@@ -159,7 +211,7 @@ Adapted (5k steps)            ?               ?                 ?
 Adapted (10k steps)           ?               ?                 ?
 ```
 
-## 6. 已知的坑（实现时规避）
+## 7. 已知的坑（实现时规避）
 
 - RLE mask 是原图分辨率 900×1600：resize 到 512 时用与图像一致的插值，避免 mask 与特征错位
 - bbox 是原图坐标：映射到 32×32 patch 网格时除以 16、clip 边界、空 bbox 丢弃
@@ -168,14 +220,14 @@ Adapted (10k steps)           ?               ?                 ?
 - `teacher_checkpoint.pth` 加载：eval 路径自动去掉 `backbone.` 前缀（`init_model_from_checkpoint_for_evals`）
 - 确认续训输出目录里有 5k/10k 的 `eval/<iter>/teacher_checkpoint.pth`
 
-## 7. 禁止事项
+## 8. 禁止事项
 
 - 不改 `train.py` / `ssl_meta_arch.py` / 任何训练配置
 - 不下载模型权重（权重路径由用户提供）
 - 不改动 nuImages 原始数据
 - 不启动任何训练
 
-## 8. 交付物
+## 9. 交付物
 
 1. `dinov3/eval/nuimages/` 全部代码
 2. 可视化验证图（原图 + mask / bbox 叠加）
