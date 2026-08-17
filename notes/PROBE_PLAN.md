@@ -18,6 +18,8 @@
 - 冻结 backbone，输入 512×512，取最后一层 patch 特征（32×32×1024）
 - 线性头（1×1 conv），二分类 drivable / 非 drivable
 - 目标来自 `surface_ann.mask`（RLE 解码 → 二值图，原图 900×1600 → resize 到 512 与特征对齐）
+- **只取 `category == flat.driveable_surface`**，同一关键帧的多条记录 **OR 合并**成一张二值 drivable mask
+  （注意 `surface_ann` 还包含 `vehicle.ego` 自车 mask，不能混入）
 - 训练集：v1.0-train 关键帧（channel==CAM_FRONT 且 is_key_frame）；评测：v1.0-val
 - 指标：**drivable IoU**（主）+ F1/PR（辅助）
 
@@ -26,6 +28,16 @@
 - 线性分类到 category（8 大类）
 - 训练集：v1.0-train 的 object_ann；评测：v1.0-val
 - 指标：**top-1 acc**（按 object 样本计）+ 可选 mAP
+
+### 指标 3：image-level multi-label classification（CLS 全局指标，补过拟合盲区）
+- 背景：DINO loss 作用在 CLS token 上，patch 级指标测不到 CLS 特征可能的退化；
+  判断续训是否过拟合必须同时看全局特征，故增加本指标
+- 冻结 backbone，512×512，取 **CLS token**（1024 维）
+- 线性头 `Linear(1024→8) + sigmoid`，**BCE 多标签**
+- 标签：该关键帧内出现的 object 类别集合（object_ann 的 category 聚合 → 8 维多标签向量）
+- 训练集：v1.0-train 关键帧（channel==CAM_FRONT 且 is_key_frame，带 object_ann）；评测：v1.0-val
+- 指标：**mAP**（per-class AP 平均）+ 可选 top-1（最高概率类是否在标签集合中）
+- 与指标 1/2 的关系：patch 测 dense、CLS 测 global；三者任一在中间曲线上"先升后降"才是过拟合信号
 
 ### 统一协议
 ```
@@ -71,6 +83,8 @@ sensor.json  → channel("CAM_FRONT" ...)
 ```
 - `bbox` 是**字符串**，需 `json.loads` 或 `eval` 转 `[x1,y1,x2,y2]`（原图坐标）
 - `mask` 是 pycocotools RLE 格式（`maskUtils.decode`）
+- **解码方式**：`counts` 是 base64 字符串，不能直接 `maskUtils.decode`，必须先用 `base64.b64decode` 再解；
+  直接复用官方 devkit：`from nuimages.utils.utils import mask_decode`（内部已完成 b64decode + decode）
 - `category.json` 提供 `name`（8 大类）
 - 标注按 `sample_data_token` 与关键帧对齐
 
@@ -83,7 +97,8 @@ dinov3/eval/nuimages/
 ├── data.py              # NuImagesProbeDataset
 ├── extract_features.py  # 冻结 backbone 提取并缓存特征（每 checkpoint 一次）
 ├── drivable_probe.py    # 指标 1
-└── object_probe.py      # 指标 2
+├── object_probe.py      # 指标 2
+└── cls_probe.py         # 指标 3
 ```
 
 ### data.py 实现要点
@@ -99,13 +114,13 @@ dinov3/eval/nuimages/
 ### extract_features.py 实现要点
 - 加载冻结 backbone（eval 模式、`torch.no_grad()`），输出最后一层 patch 特征
 - 每 checkpoint 一个缓存目录：`<output>/probe_features/<name>/`（name = raw / 5k / 10k）
-- 每张图缓存：`patch_feats.pt` [32,32,1024]、`drivable_mask.pt` [32,32]（resize 后）、`objects.pt`（patch 网格坐标的 bbox + 类别）
+- 每张图缓存：`patch_feats.pt` [32,32,1024]、`drivable_mask.pt` [32,32]（resize 后）、`objects.pt`（patch 网格坐标的 bbox + 类别）、`cls_feat.pt` [1024]
 - 支持多进程/多卡并行（B200 显存充裕，batch 可开大）
 
-### drivable_probe.py / object_probe.py 实现要点
+### drivable_probe.py / object_probe.py / cls_probe.py 实现要点
 - 只读特征缓存，不碰原图/backbone
 - 训练线性头（或 MLP-256），协议见 §1
-- 输出：IoU/F1（指标 1）、top-1 acc（指标 2），打印到 stdout + 写 json
+- 输出：IoU/F1（指标 1）、top-1 acc（指标 2）、mAP（指标 3），打印到 stdout + 写 json
 - 命令行参数：`--features-dir`、`--split VAL`、`--seed 0` 等；A/B 只换 `--features-dir`
 
 ## 4. 执行步骤
@@ -114,16 +129,16 @@ dinov3/eval/nuimages/
 2. **特征提取**：`extract_features.py` 对 A（raw）+ B（5k、10k）各提取一次
 3. **Probe 跑通**：先在 A 上跑两个指标，确认数值合理（drivable IoU 明显高于随机、object top-1 明显高于多数类基线）
 4. **B 各中间点**：同一命令换 `--features-dir`
-5. **产出**：结果表 + 曲线（IoU/top-1 vs SSL steps，0 步 = A）
+5. **产出**：结果表 + 曲线（IoU / top-1 / mAP vs SSL steps，0 步 = A）
 6. **Gate 分析**：看两条指标的方向与中间点一致性
 
 ## 5. 结果表模板
 
 ```
-Model                     Drivable IoU ↑    Object top-1 ↑
-Original DINOv3 (0 step)      ?               ?
-Adapted (5k steps)            ?               ?
-Adapted (10k steps)           ?               ?
+Model                     Drivable IoU ↑    Object top-1 ↑    CLS mAP ↑
+Original DINOv3 (0 step)      ?               ?                 ?
+Adapted (5k steps)            ?               ?                 ?
+Adapted (10k steps)           ?               ?                 ?
 ```
 
 ## 6. 已知的坑（实现时规避）
