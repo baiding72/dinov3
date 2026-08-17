@@ -1,0 +1,1477 @@
+                                                         Emerging Properties in Self-Supervised Vision Transformers
+
+                                                            Mathilde Caron1,2     Hugo Touvron1,3   Ishan Misra1   Hervé Jegou1
+                                                                   Julien Mairal2    Piotr Bojanowski1    Armand Joulin1
+                                                                 1
+                                                                     Facebook AI Research                2
+                                                                                                             Inria∗        3
+                                                                                                                               Sorbonne University
+
+
+
+
+arXiv:2104.14294v1 [cs.CV] 29 Apr 2021
+                                         Figure 1: Self-attention from a Vision Transformer with 8 × 8 patches trained with no supervision. We look at the self-attention of
+                                         the [CLS] token on the heads of the last layer. This token is not attached to any label nor supervision. These maps show that the model
+                                         automatically learns class-specific features leading to unsupervised object segmentations.
+
+                                                                     Abstract                                    1. Introduction
+                                                                                                                     Transformers [67] have recently emerged as an alternative
+                                             In this paper, we question if self-supervised learning pro-         to convolutional neural networks (convnets) for visual recog-
+                                         vides new properties to Vision Transformer (ViT) [18] that              nition [18, 66, 80]. Their adoption has been coupled with
+                                         stand out compared to convolutional networks (convnets).                a training strategy inspired by natural language processing
+                                         Beyond the fact that adapting self-supervised methods to this           (NLP), that is, pretraining on large quantities of data and
+                                         architecture works particularly well, we make the follow-               finetuning on the target dataset [17, 53]. The resulting Vision
+                                         ing observations: first, self-supervised ViT features contain           Transformers (ViT) [18] are competitive with convnets but,
+                                         explicit information about the semantic segmentation of an              they have not yet delivered clear benefits over them: they
+                                         image, which does not emerge as clearly with supervised                 are computationally more demanding, require more training
+                                         ViTs, nor with convnets. Second, these features are also ex-            data, and their features do not exhibit unique properties.
+                                         cellent k-NN classifiers, reaching 78.3% top-1 on ImageNet                  In this paper, we question whether the muted success of
+                                         with a small ViT. Our study also underlines the importance of           Transformers in vision can be explained by the use of super-
+                                         momentum encoder [31], multi-crop training [10], and the                vision in their pretraining. Our motivation is that one of the
+                                         use of small patches with ViTs. We implement our findings               main ingredients for the success of Transformers in NLP was
+                                         into a simple self-supervised method, called DINO, which                the use of self-supervised pretraining, in the form of close
+                                         we interpret as a form of self-distillation with no labels.             procedure in BERT [17] or language modeling in GPT [53].
+                                         We show the synergy between DINO and ViTs by achieving                  These self-supervised pretraining objectives use the words
+                                         80.1% top-1 on ImageNet in linear evaluation with ViT-Base.             in a sentence to create pretext tasks that provide a richer
+                                                                                                                 learning signal than the supervised objective of predicting
+                                                                                                                 a single label per sentence. Similarly, in images, image-
+                                                                                                                 level supervision often reduces the rich visual information
+                                             ∗ Univ. Grenoble Alpes, Inria, CNRS, Grenoble INP, LJK, 38000       contained in an image to a single concept selected from a
+                                         Grenoble, France.
+                                         Correspondence: mathilde@fb.com                                         predefined set of a few thousand categories of objects [58].
+                                         Code: https://github.com/facebookresearch/dino                              While the self-supervised pretext tasks used in NLP are
+
+
+                                                                                                             1
+text specific, many existing self-supervised methods have                                         loss:
+shown their potential on images with convnets [10, 12, 28,                            p1       - p2 log p1       p2
+31]. They typically share a similar structure but with differ-                                                        sg
+ent components designed to avoid trivial solutions (collapse)                      softmax                    softmax
+or to improve performance [15]. In this work, inspired from
+these methods, we study the impact of self-supervised pre-                                                   centering
+training on ViT features. Of particular interest, we have                                         ema
+identified several interesting properties that do not emerge                     student gθs                 teacher gθt
+with supervised ViTs, nor with convnets:
+                                                                                      x1                         x2
+   • Self-supervised ViT features explicitly contain the
+     scene layout and, in particular, object boundaries, as                                        x
+     shown in Figure 1. This information is directly accessi-
+     ble in the self-attention modules of the last block.         Figure 2: Self-distillation with no labels. We illustrate DINO in
+   • Self-supervised ViT features perform particularly well       the case of one single pair of views (x1 , x2 ) for simplicity. The
+                                                                  model passes two different random transformations of an input
+     with a basic nearest neighbors classifier (k-NN) without
+                                                                  image to the student and teacher networks. Both networks have
+     any finetuning, linear classifier nor data augmentation,     the same architecture but different parameters. The output of the
+     achieving 78.3% top-1 accuracy on ImageNet.                  teacher network is centered with a mean computed over the batch.
+    The emergence of segmentation masks seems to be a             Each networks outputs a K dimensional feature that is normalized
+                                                                  with a temperature softmax over the feature dimension. Their
+property shared across self-supervised methods. However,
+                                                                  similarity is then measured with a cross-entropy loss. We apply a
+the good performance with k-NN only emerge when com-
+                                                                  stop-gradient (sg) operator on the teacher to propagate gradients
+bining certain components such as momentum encoder [31]           only through the student. The teacher parameters are updated with
+and multi-crop augmentation [10]. Another finding from our        an exponential moving average (ema) of the student parameters.
+study is the importance of using smaller patches with ViTs
+to improve the quality of the resulting features.                 2. Related work
+    Overall, our findings about the importance of these
+components lead us to design a simple self-supervised ap-         Self-supervised learning. A large body of work on self-
+proach that can be interpreted as a form of knowledge             supervised learning focuses on discriminative approaches
+distillation [33] with no labels. The resulting framework,        coined instance classification [12, 19, 31, 70], which con-
+DINO, simplifies self-supervised training by directly pre-        siders each image a different class and trains the model
+dicting the output of a teacher network—built with a mo-          by discriminating them up to data augmentations. How-
+mentum encoder—by using a standard cross-entropy loss.            ever, explicitly learning a classifier to discriminate be-
+Interestingly, our method can work with only a centering          tween all images [19] does not scale well with the num-
+and sharpening of the teacher output to avoid collapse, while     ber of images. Wu et al. [70] propose to use a noise
+other popular components such as predictor [28], advanced         contrastive estimator (NCE) [30] to compare instances in-
+normalization [10] or contrastive loss [31] add little benefits   stead of classifying them. A caveat of this approach is
+in terms of stability or performance. Of particular impor-        that it requires comparing features from a large number
+tance, our framework is flexible and works on both convnets       of images simultaneously. In practice, this requires large
+and ViTs without the need to modify the architecture, nor         batches [12] or memory banks [31, 70]. Several variants
+adapt internal normalizations [56].                               allow automatic grouping of instances in the form of cluster-
+    We further validate the synergy between DINO and ViT          ing [2, 8, 9, 25, 34, 40, 71, 77, 82].
+by outperforming previous self-supervised features on the            Recent works have shown that we can learn unsupervised
+ImageNet linear classification benchmark with 80.1% top-1         features without discriminating between images. Of par-
+accuracy with a ViT-Base with small patches. We also con-         ticular interest, Grill et al. [28] propose a metric-learning
+firm that DINO works with convnets by matching the state          formulation called BYOL, where features are trained by
+of the art with a ResNet-50 architecture. Finally, we discuss     matching them to representations obtained with a momen-
+different scenarios to use DINO with ViTs in case of limited      tum encoder. It has been shown that methods like BYOL
+computation and memory capacity. In particular, training          work even without a momentum encoder, at the cost of a
+DINO with ViT takes just two 8-GPU servers over 3 days            drop of performance [15, 28]. Several other works echo this
+to achieve 76.1% on ImageNet linear benchmark, which              direction, showing that one can train features matching them
+outperforms self-supervised systems based on convnets of          to a uniform distribution on the `2 hypersphere [6] or by
+comparable sizes with significantly reduced compute require-      using whitening [22, 78]. Our approach takes its inspiration
+ments [10, 28].                                                   from BYOL but operates with a different similarity matching
+loss and uses the exact same architecture for the student and     Algorithm 1 DINO PyTorch pseudocode w/o multi-crop.
+the teacher. That way, our work completes the interpretation
+                                                                  # gs, gt: student and teacher networks
+initiated in BYOL of self-supervised learning as a form of        # C: center (K)
+                                                                  # tps, tpt: student and teacher temperatures
+Mean Teacher self-distillation [62] with no labels.               # l, m: network and center momentum rates
+                                                                  gt.params = gs.params
+                                                                  for x in loader: # load a minibatch x with n samples
+Self-training and knowledge distillation. Self-training               x1, x2 = augment(x), augment(x) # random views
+aims at improving the quality of features by propagating              s1, s2 = gs(x1), gs(x2) # student output n-by-K
+                                                                      t1, t2 = gt(x1), gt(x2) # teacher output n-by-K
+a small initial set of annotations to a large set of unlabeled
+instances. This propagation can either be done with hard              loss = H(t1, s2)/2 + H(t2, s1)/2
+                                                                      loss.backward() # back-propagate
+assignments of labels [39, 75, 76] or with a soft assign-
+                                                                      # student, teacher and center updates
+ment [73]. When using soft labels, the approach is often              update(gs) # SGD
+referred to as knowledge distillation [7, 33] and has been            gt.params = l*gt.params + (1-l)*gs.params
+                                                                      C = m*C + (1-m)*cat([t1, t2]).mean(dim=0)
+primarily designed to train a small network to mimic the
+                                                                  def H(t, s):
+output of a larger network to compress models. Xie et                 t = t.detach() # stop gradient
+al. [73] have recently shown that distillation could be used          s = softmax(s / tps, dim=1)
+                                                                      t = softmax((t - C) / tpt, dim=1) # center + sharpen
+to propagate soft pseudo-labels to unlabelled data in a self-         return - (t * log(s)).sum(dim=1).mean()
+training pipeline, drawing an essential connection between
+self-training and knowledge distillation. Our work builds on
+this relation and extends knowledge distillation to the case
+                                                                  sharpness of the output distribution, and a similar formula
+where no labels are available. Previous works have also com-
+                                                                  holds for Pt with temperature τt . Given a fixed teacher
+bined self-supervised learning and knowledge distillation,
+                                                                  network gθt , we learn to match these distributions by min-
+enabling self-supervised model compression [24] and perfor-
+                                                                  imizing the cross-entropy loss w.r.t. the parameters of the
+mance gains [13, 45]. However, these works rely on a pre-
+                                                                  student network θs :
+trained fixed teacher while our teacher is dynamically built
+during training. This way, knowledge distillation, instead
+                                                                                      min H(Pt (x), Ps (x)),               (2)
+of being used as a post-processing step to self-supervised                              θs
+pre-training, is directly cast as a self-supervised objective.
+Finally, our work is also related to codistillation [1] where     where H(a, b) = −a log b.
+student and teacher have the same architecture and use distil-       In the following, we detail how we adapt the problem
+lation during training. However, the teacher in codistillation    in Eq. (2) to self-supervised learning. First, we construct
+is also distilling from the student, while it is updated with a   different distorted views, or crops, of an image with multi-
+momentum average of the student in our work.                      crop strategy [10]. More precisely, from a given image, we
+                                                                  generate a set V of different views. This set contains two
+3. Approach                                                       global views, xg1 and xg2 and several local views of smaller
+                                                                  resolution. All crops are passed through the student while
+3.1. SSL with Knowledge Distillation                              only the global views are passed through the teacher, there-
+   The framework used for this work, DINO, shares the same        fore encouraging “local-to-global” correspondences. We
+overall structure as recent self-supervised approaches [10,       minimize the loss:
+15, 12, 28, 31]. However, our method shares also similarities                      X         X
+with knowledge distillation [33] and we present it under                  min                       H(Pt (x), Ps (x0 )).   (3)
+                                                                           θs
+this angle. We illustrate DINO in Figure 2 and propose a                        x∈{xg   g
+                                                                                    1 ,x2 }   x0 ∈V
+                                                                                              x0 6= x
+pseudo-code implementation in Algorithm 1.
+   Knowledge distillation is a learning paradigm where we            This loss is general and can be used on any number of
+train a student network gθs to match the output of a given        views, even only 2. However, we follow the standard setting
+teacher network gθt , parameterized by θs and θt respectively.    for multi-crop by using 2 global views at resolution 2242
+Given an input image x, both networks output probability          covering a large (for example greater than 50%) area of the
+distributions over K dimensions denoted by Ps and Pt . The        original image, and several local views of resolution 962
+probability P is obtained by normalizing the output of the        covering only small areas (for example less than 50%) of
+network g with a softmax function. More precisely,                the original image. We refer to this setting as the basic
+                         exp(gθs (x)(i) /τs )                     parametrization of DINO, unless mentioned otherwise.
+           Ps (x)(i) = PK                         ,        (1)       Both networks share the same architecture g with differ-
+                                         (k) /τ )
+                        k=1 exp(gθs (x)        s
+                                                                  ent sets of parameters θs and θt . We learn the parameters θs
+with τs > 0 a temperature parameter that controls the             by minimizing Eq. (3) with stochastic gradient descent.
+Table 1: Networks configuration. “Blocks” is the number of          both student and teacher networks. Of particular interest, we
+Transformer blocks, “dim” is channel dimension and “heads” is the   note that unlike standard convnets, ViT architectures do not
+number of heads in multi-head attention. “# tokens” is the length   use batch normalizations (BN) by default. Therefore, when
+of the token sequence when considering 2242 resolution inputs, “#
+                                                                    applying DINO to ViT we do not use any BN also in the
+params” is the total number of parameters (without counting the
+projection head) and “im/s” is the inference time on a NVIDIA
+                                                                    projection heads, making the system entirely BN-free.
+V100 GPU with 128 samples per forward.
+                                                                    Avoiding collapse. Several self-supervised methods dif-
+  model        blocks dim heads #tokens #params im/s                fer by the operation used to avoid collapse, either through
+                                                                    contrastive loss [70], clustering constraints [8, 10], predic-
+  ResNet-50       –    2048     –       –       23M      1237       tor [28] or batch normalizations [28, 56]. While our frame-
+  DeiT-S/16      12    384      6      197      21M      1007       work can be stabilized with multiple normalizations [10],
+  DeiT-S/8       12    384      6      785      21M       180       it can also work with only a centering and sharpening of
+  ViT-B/16       12    768     12      197      85M       312       the momentum teacher outputs to avoid model collapse. As
+  ViT-B/8        12    768     12      785      85M        63       shown experimentally in Section 5.3, centering prevents
+                                                                    one dimension to dominate but encourages collapse to the
+                                                                    uniform distribution, while the sharpening has the oppo-
+Teacher network. Unlike knowledge distillation, we do               site effect. Applying both operations balances their effects
+not have a teacher gθt given a priori and hence, we build it        which is sufficient to avoid collapse in presence of a momen-
+from past iterations of the student network. We study dif-          tum teacher. Choosing this method to avoid collapse trades
+ferent update rules for the teacher in Section 5.2 and show         stability for less dependence over the batch: the centering
+that freezing the teacher network over an epoch works sur-          operation only depends on first-order batch statistics and
+prisingly well in our framework, while copying the student          can be interpreted as adding a bias term c to the teacher:
+weight for the teacher fails to converge. Of particular in-         gt (x) ← gt (x) + c. The center c is updated with an expo-
+terest, using an exponential moving average (EMA) on the            nential moving average, which allows the approach to work
+student weights, i.e., a momentum encoder [31], is partic-          well across different batch sizes as shown in Section 5.5:
+ularly well suited for our framework. The update rule is
+                                                                                                         B
+θt ← λθt + (1 − λ)θs , with λ following a cosine schedule                                            1 X
+from 0.996 to 1 during training [28]. Originally the momen-                     c ← mc + (1 − m)          gθ (xi ),           (4)
+                                                                                                     B i=1 t
+tum encoder has been introduced as a substitute for a queue
+in contrastive learning [31]. However, in our framework, its        where m > 0 is a rate parameter and B is the batch size.
+role differs since we do not have a queue nor a contrastive         Output sharpening is obtained by using a low value for the
+loss, and may be closer to the role of the mean teacher used        temperature τt in the teacher softmax normalization.
+in self-training [62]. Indeed, we observe that this teacher per-
+forms a form of model ensembling similar to Polyak-Ruppert          3.2. Implementation and evaluation protocols
+averaging with an exponential decay [49, 57]. Using Polyak-            In this section, we provide the implementation details to
+Ruppert averaging for model ensembling is a standard prac-          train with DINO and present the evaluation protocols used
+tice to improve the performance of a model [36]. We observe         in our experiments.
+that this teacher has better performance than the student
+throughout the training, and hence, guides the training of the
+student by providing target features of higher quality. This        Vision Transformer. We briefly describe the mechanism
+dynamic was not observed in previous works [28, 56].                of the Vision Transformer (ViT) [18, 67] and refer to
+                                                                    Vaswani et al. [67] for details about Transformers and to
+                                                                    Dosovitskiy et al. [18] for its adaptation to images. We fol-
+Network architecture. The neural network g is composed              low the implementation used in DeiT [66]. We summarize
+of a backbone f (ViT [18] or ResNet [32]), and of a projec-         the configuration of the different networks used in this pa-
+tion head h: g = h ◦ f . The features used in downstream            per in Table 1. The ViT architecture takes as input a grid
+tasks are the backbone f output. The projection head con-           of non-overlapping contiguous image patches of resolution
+sists of a 3-layer multi-layer perceptron (MLP) with hidden         N × N . In this paper we typically use N = 16 (“/16”)
+dimension 2048 followed by `2 normalization and a weight            or N = 8 (“/8”). The patches are then passed through a
+normalized fully connected layer [59] with K dimensions,            linear layer to form a set of embeddings. We add an extra
+which is similar to the design from SwAV [10]. We have              learnable token to the sequence [17, 18]. The role of this
+tested other projection heads and this particular design ap-        token is to aggregate information from the entire sequence
+pears to work best for DINO (Appendix C). We do not use a           and we attach the projection head h at its output. We refer
+predictor [28, 15], resulting in the exact same architecture in     to this token as the class token [CLS] for consistency with
+previous works[17, 18, 66], even though it is not attached      Table 2: Linear and k-NN classification on ImageNet. We report
+to any label nor supervision in our case. The set of patch      top-1 accuracy for linear and k-NN evaluations on the validation
+tokens and [CLS] token are fed to a standard Transformer        set of ImageNet for different self-supervised methods. We focus
+                                                                on ResNet-50 and DeiT-small architectures, but also report the best
+network with a “pre-norm” layer normalization [11, 37]. The
+                                                                results obtained across architectures. ∗ are run by us. We run the
+Transformer is a sequence of self-attention and feed-forward    k-NN evaluation for models with official released weights. The
+layers, paralleled with skip connections. The self-attention    throughput (im/s) is calculated on a NVIDIA V100 GPU with 128
+layers update the token representations by looking at the       samples per forward. Parameters (M) are of the feature extractor.
+other token representations with an attention mechanism [4].
+                                                                Method           Arch.            Param.    im/s   Linear k-NN
+                                                                Supervised       RN50                23     1237    79.3     79.3
+                                                                SCLR [12]        RN50                23     1237    69.1     60.7
+Implementation details. We pretrain the models on the           MoCov2 [14]      RN50                23     1237    71.1     61.9
+ImageNet dataset [58] without labels. We train with the         InfoMin [64]     RN50                23     1237    73.0     65.3
+adamw optimizer [42] and a batch size of 1024, distributed      BarlowT [78]     RN50                23     1237    73.2     66.0
+over 16 GPUs when using DeiT-S/16. The learning rate            OBoW [25]        RN50                23     1237    73.8     61.9
+is linearly ramped up during the first 10 epochs to its base    BYOL [28]        RN50                23     1237    74.4     64.8
+value determined with the following linear scaling rule [27]:   DCv2 [10]        RN50                23     1237    75.2     67.1
+lr = 0.0005 ∗ batchsize/256. After this warmup, we decay        SwAV [10]        RN50                23     1237    75.3     65.7
+                                                                DINO             RN50                23     1237    75.3     67.5
+the learning rate with a cosine schedule [41]. The weight
+decay also follows a cosine schedule from 0.04 to 0.4. The      Supervised       DeiT-S              21     1007    79.8     79.8
+temperature τs is set to 0.1 while we use a linear warm-up      BYOL∗ [28]       DeiT-S              21     1007    71.4     66.6
+for τt from 0.04 to 0.07 during the first 30 epochs. We         MoCov2∗ [14]     DeiT-S              21     1007    72.7     64.4
+follow the data augmentations of BYOL [28] (color jittering,    SwAV∗ [10]       DeiT-S              21     1007    73.5     66.3
+                                                                DINO             DeiT-S              21     1007    77.0     74.5
+Gaussian blur and solarization) and multi-crop [10] with a
+bicubic interpolation to adapt the position embeddings to       Comparison across architectures
+the scales [18, 66]. The code and models to reproduce our       SCLR [12]      RN50w4               375     117     76.8     69.3
+results is publicly available.                                  SwAV [10]      RN50w2                93     384     77.3     67.3
+                                                                BYOL [28]      RN50w2                93     384     77.4      –
+                                                                DINO           ViT-B/16              85     312     78.2     76.1
+                                                                SwAV [10]      RN50w5               586      76     78.5     67.1
+                                                                BYOL [28]      RN50w4               375     117     78.6      –
+Evaluation protocols. Standard protocols for self-              BYOL [28]      RN200w2              250     123     79.6     73.9
+supervised learning are to either learn a linear classifier     DINO           DeiT-S/8              21     180     79.7     78.3
+on frozen features [79, 31] or to finetune the features         SCLRv2 [13] RN152w3+SK              794      46     79.8     73.1
+on downstream tasks. For linear evaluations, we apply           DINO           ViT-B/8               85     63      80.1     77.4
+random resize crops and horizontal flips augmentation
+during training, and report accuracy on a central crop.
+For finetuning evaluations, we initialize networks with         4. Main Results
+the pretrained weights and adapt them during training.
+                                                                   We first validate the DINO framework used in this study
+However, both evaluations are sensitive to hyperparameters,
+                                                                with the standard self-supervised benchmark on ImageNet.
+and we observe a large variance in accuracy between runs
+                                                                We then study the properties of the resulting features for
+when varying the learning rate for example. We thus also
+                                                                retrieval, object discovery and transfer-learning.
+evaluate the quality of features with a simple weighted
+nearest neighbor classifier (k-NN) as in [70]. We freeze        4.1. Comparing with SSL frameworks on ImageNet
+the pretrain model to compute and store the features of the
+training data of the downstream task. The nearest neighbor        We consider two different settings: comparison with the
+classifier then matches the feature of an image to the k        same architecture and across architectures.
+nearest stored features that votes for the label. We sweep
+over different number of nearest neighbors and find that        Comparing with the same architecture. In top panel of
+20 NN is consistently working the best for most of our          Table 2, we compare DINO with other self-supervised meth-
+runs. This evaluation protocol does not require any other       ods with the same architecture, either a ResNet-50 [32] or a
+hyperparameter tuning, nor data augmentation and can be         DeiT-small (DeiT-S) [66]. The choice of DeiT-S is motivated
+run with only one pass over the downstream dataset, greatly     by its similarity with ResNet-50 along several axes: number
+simplifying the feature evaluation.                             of parameters (21M vs 23M), throughput (1237/sec VS 1007
+Table 3: Image retrieval. We compare the performance in retrieval         Table 4: Copy detection. We report the mAP performance in copy
+of off-the-shelf features pretrained with supervision or with DINO        detection on Copydays “strong” subset [20]. For reference, we
+on ImageNet and Google Landmarks v2 (GLDv2) dataset. We                   also report the performance of the multigrain model [5], trained
+report mAP on revisited Oxford and Paris. Pretraining with DINO           specifically for particular object retrieval.
+on a landmark dataset performs particularly well. For reference, we
+also report the best retrieval method with off-the-shelf features [55].   Method            Arch.         Dim.      Resolution       mAP
+                                                                                                                           2
+                                                                          Multigrain [5]    ResNet-50     2048         224           75.1
+                                               ROx           RPar
+                                                                          Multigrain [5]    ResNet-50     2048    largest side 800   82.5
+Pretrain     Arch.               Pretrain    M      H      M       H
+                                                                          Supervised [66]   ViT-B/16      1536         2242          76.4
+Sup. [55] RN101+R-MAC             ImNet     49.8 18.5 74.0 52.1           DINO              ViT-B/16      1536         2242          81.7
+                                                                          DINO              ViT-B/8       1536         3202          85.5
+Sup.         DeiT-S/16           ImNet      33.5 8.9 63.0 37.2
+DINO         ResNet-50           ImNet      35.4 11.1 55.9 27.5
+DINO         DeiT-S/16           ImNet      41.8 13.7 63.1 34.4
+DINO         DeiT-S/16           GLDv2      51.5 24.3 75.3 51.6           4.2.1    Nearest neighbor retrieval with DINO ViT
+                                                                          The results on ImageNet classification have exposed the
+                                                                          potential of our features for tasks relying on nearest neighbor
+im/sec) and supervised performance on ImageNet with the                   retrieval. In this set of experiments, we further consolidate
+training procedure of [66] (79.3% VS 79.8%). We explore                   this finding on landmark retrieval and copy detection tasks.
+variants of DeiT-S in Appendix D. First, we observe that
+DINO performs on par with the state of the art on ResNet-50,              Image Retrieval. We consider the revisited [51] Oxford
+validating that DINO works in the standard setting. When                  and Paris image retrieval datasets [48]. They contain 3 differ-
+we switch to a ViT architecture, DINO outperforms BYOL,                   ent splits of gradual difficulty with query/database pairs. We
+MoCov2 and SwAV by +3.5% with linear classification and                   report the Mean Average Precision (mAP) for the Medium
+by +7.9% with k-NN evaluation. More surprisingly, the                     (M) and Hard (H) splits. In Table 3, we compare the perfor-
+performance with a simple k-NN classifier is almost on par                mance of different off-the-shelf features obtained with either
+with a linear classifier (74.5% versus 77.0%). This property              supervised or DINO training. We freeze the features and
+emerges only when using DINO with ViT architectures, and                  directly apply k-NN for retrieval. We observe that DINO
+does not appear with other existing self-supervised methods               features outperform those trained on ImageNet with labels.
+nor with a ResNet-50.                                                         An advantage of SSL approaches is that they can be
+                                                                          trained on any dataset, without requiring any form of anno-
+                                                                          tations. We train DINO on the 1.2M clean set from Google
+                                                                          Landmarks v2 (GLDv2) [69], a dataset of landmarks de-
+Comparing across architectures. On the bottom panel of                    signed for retrieval purposes. DINO ViT features trained on
+Table 2, we compare the best performance obtained across                  GLDv2 are remarkably good, outperforming previously pub-
+architectures. The interest of this setting is not to compare             lished methods based on off-the-shelf descriptors [65, 55].
+methods directly, but to evaluate the limits of a ViT trained
+with DINO when moving to larger architectures. While
+                                                                          Copy detection. We also evaluate the performance of ViTs
+training a larger ViT with DINO improves the performance,
+                                                                          trained with DINO on a copy detection task. We report the
+reducing the size of the patches (“/8” variants) has a bigger
+                                                                          mean average precision on the “strong” subset of the INRIA
+impact on the performance. While reducing the patch size
+                                                                          Copydays dataset [20]. The task is to recognize images
+do not add parameters, it still leads to a significant reduction
+                                                                          that have been distorted by blur, insertions, print and scan,
+of running time, and larger memory usage. Nonetheless, a
+                                                                          etc. Following prior work [5], we add 10k distractor images
+base ViT with 8 × 8 patches trained with DINO achieves
+                                                                          randomly sampled from the YFCC100M dataset [63]. We
+80.1% top-1 in linear classification and 77.4% with a k-NN
+                                                                          perform copy detection directly with cosine similarity on the
+classifier with 10× less parameters and 1.4× faster run time
+                                                                          features obtained from our pretrained network. The features
+than previous state of the art [13].
+                                                                          are obtained as the concatenation of the output [CLS] token
+                                                                          and of the GeM pooled [52] output patch tokens. This results
+4.2. Properties of ViT trained with SSL                                   in a 1536d descriptor for ViT-B. Following [5], we apply
+                                                                          whitening on the features. We learn this transformation on
+   We evaluate properties of the DINO features in terms of                an extra 20K random images from YFCC100M, distincts
+nearest neighbor search, retaining information about object               from the distractors. Table 4 shows that ViT trained with
+location and transferability to downstream tasks.                         DINO is very competitive on copy detection.
+Table 5: DAVIS 2017 Video object segmentation. We evaluate             Video instance segmentation. In Tab. 5, we evaluate the
+the quality of frozen features on video instance tracking. We report   output patch tokens on the DAVIS-2017 video instance seg-
+mean region similarity Jm and mean contour-based accuracy Fm .         mentation benchmark [50]. We follow the experimental pro-
+We compare with existing self-supervised methods and a supervised
+                                                                       tocol in Jabri et al. [35] and segment scenes with a nearest-
+DeiT-S/8 trained on ImageNet. Image resolution is 480p.
+                                                                       neighbor between consecutive frames; we thus do not train
+                                                                       any model on top of the features, nor finetune any weights
+Method         Data         Arch.        (J &F)m        Jm      Fm
+                                                                       for the task. We observe in Tab. 5 that even though our
+Supervised                                                             training objective nor our architecture are designed for dense
+ImageNet       INet         DeiT-S/8        66.0       63.9    68.1    tasks, the performance is competitive on this benchmark.
+STM [46]       I/D/Y        RN50            81.8       79.2    84.3    Since the network is not finetuned, the output of the model
+Self-supervised                                                        must have retained some spatial information. Finally, for
+CT [68]        VLOG         RN50            48.7       46.4    50.0    this dense recognition task, the variants with small patches
+MAST [38] YT-VOS            RN18            65.5       63.3    67.6    (“/8”) perform much better (+9.1% (J &F)m for ViT-B).
+STC [35]       Kinetics     RN18            67.6       64.8    70.2
+DINO           INet         DeiT-S/16       61.8       60.2    63.4
+DINO           INet         ViT-B/16        62.3       60.7    63.9
+                                                                       Probing the self-attention map. In Fig. 3, we show that
+DINO           INet         DeiT-S/8        69.9       66.6    73.1    different heads can attend to different semantic regions of an
+DINO           INet         ViT-B/8         71.4       67.9    74.9    image, even when they are occluded (the bushes on the third
+                                                                       row) or small (the flag on the second row). Visualizations are
+                                                                       obtained with 480p images, resulting in sequences of 3601
+                                                                       tokens for DeiT-S/8. In Fig. 4, we show that a supervised
+                                                                       ViT does not attend well to objects in presence of clutter
+                                                                       both qualitatively and quantitatively. We report the Jaccard
+                                                                       similarity between the ground truth and segmentation masks
+                                                                       obtained by thresholding the self-attention map to keep 60%
+                                                                       of the mass. Note that the self-attention maps are smooth
+                                                                       and not optimized to produce a mask. Nonetheless, we see
+                                                                       a clear difference between the supervised or DINO models
+                                                                       with a significant gap in terms of Jaccard similarities. Note
+                                                                       that self-supervised convnets also contain information about
+                                                                       segmentations but it requires dedicated methods to extract it
+                                                                       from their weights [29].
+
+                                                                       4.2.3   Transfer learning on downstream tasks
+                                                                       In Tab. 6, we evaluate the quality of the features pretrained
+                                                                       with DINO on different downstream tasks. We compare
+                                                                       with features from the same architectures trained with super-
+                                                                       vision on ImageNet. We follow the protocol used in Tou-
+                                                                       vron et al. [66] and finetune the features on each downstream
+                                                                       task. We observe that for ViT architectures, self-supervised
+Figure 3: Attention maps from multiple heads. We consider the          pretraining transfers better than features trained with su-
+heads from the last layer of a DeiT-S/8 trained with DINO and          pervision, which is consistent with observations made on
+display the self-attention for [CLS] token query. Different heads,     convolutional networks [10, 31, 60]. Finally, self-supervised
+materialized by different colors, focus on different locations that    pretraining greatly improves results on ImageNet (+1-2%).
+represents different objects or parts (more examples in Appendix).
+                                                                       5. Ablation Study of DINO
+4.2.2    Discovering the semantic layout of scenes                        In this section, we empirically study DINO applied to
+                                                                       ViT. The model considered for this entire study is DeiT-S.
+As shown qualitatively in Figure 1, our self-attention maps            We also refer the reader to Appendix for additional studies.
+contain information about the segmentation of an image. In
+                                                                       5.1. Importance of the Different Components
+this study, we measure this property on a standard benchmark
+as well as by directly probing the quality of masks generated             We show the impact of adding different components from
+from these attention maps.                                             self-supervised learning on ViT trained with our framework.
+Supervised                                                              Table 7: Important component for self-supervised ViT pre-
+                                                                        training. Models are trained for 300 epochs with DeiT-S/16. We
+                                                                        study the different components that matter for the k-NN and linear
+                                                                        (“Lin.”) evaluations. For the different variants, we highlight the
+                                                                        differences from the default DINO setting. The best combination
+                                                                        is the momentum encoder with the multicrop augmentation and
+DINO
+                                                                        the cross-entropy loss. We also report results with BYOL [28],
+                                                                        MoCo-v2 [14] and SwAV [10].
+
+                                                                               Method             Mom.    SK       MC        Loss    Pred. k-NN        Lin.
+                                                                         1 DINO                    X       7           X      CE       7      72.8     76.1
+                       Random       Supervised     DINO                  2                         7       7           X      CE       7       0.1      0.1
+          DeiT-S/16       22.0          27.3       45.9                  3                         X       X           X      CE       7      72.2     76.0
+          DeiT-S/8        21.8          23.7       44.7                  4                         X       7           7      CE       7      67.9     72.5
+                                                                         5                         X       7           X     MSE       7      52.6     62.4
+Figure 4: Segmentations from supervised versus DINO. We vi-              6                         X       7           X      CE       X      71.8     75.6
+sualize masks obtained by thresholding the self-attention maps to
+                                                                         7 BYOL                    X       7           7    MSE        X      66.6     71.4
+keep 60% of the mass. On top, we show the resulting masks for
+                                                                         8 MoCov2                  X       7           7    INCE       7      62.0     71.6
+a DeiT-S/8 trained with supervision and DINO. We show the best
+                                                                         9 SwAV                    7       X           X     CE        7      64.7     71.8
+head for both models. The table at the bottom compares the Jac-
+card similarity between the ground truth and these masks on the               SK: Sinkhorn-Knopp, MC: Multi-Crop, Pred.: Predictor
+validation images of PASCAL VOC12 dataset.                                  CE: Cross-Entropy, MSE: Mean Square Error, INCE: InfoNCE
+
+
+Table 6: Transfer learning by finetuning pretrained models on
+different datasets. We report top-1 accuracy. Self-supervised                                 ViT-B                    DeiT-S       Figure 5: Effect of
+pretraining with DINO transfers better than supervised pretraining.                                                                 Patch Size. k-NN eval-
+                                                                                       78         8x8                               uation as a function of
+
+
+                                                                      ImageNet top-1
+             Cifar10 Cifar100 INat18 INat19 Flwrs Cars INet                                 5x5                16x16                the throughputs for dif-
+                                                                                       76                8x8                        ferent input patch sizes
+DeiT-S/16                                                                                                                           with ViT-B and DeiT-S.
+Sup. [66]     99.0     89.5      70.7   76.6     98.2 92.1 79.9                        74                                           Models are trained for
+DINO          99.0     90.5      72.0   78.2     98.5 93.0 81.5                                                            16x16
+                                                                                       72                                           300 epochs.
+ViT-B/16                                                                                           102                     103
+Sup. [66]     99.0     90.8      73.2   77.7     98.4 92.1 81.8                                   throughput (im/s)
+DINO          99.1     91.7      72.6   78.6     98.8 93.0 82.8
+
+                                                                        with different patch sizes, 16 × 16, 8 × 8 and 5 × 5. We
+   In Table 7, we report different model variants as we add             also compare to ViT-B with 16 × 16 and 8 × 8 patches. All
+or remove components. First, we observe that in the absence             the models are trained for 300 epochs. We observe that the
+of momentum, our framework does not work (row 2) and                    performance greatly improves as we decrease the size of the
+more advanced operations, SK for example, are required to               patch. It is interesting to see that performance can be greatly
+avoid collapse (row 9). However, with momentum, using                   improved without adding additional parameters. However,
+SK has little impact (row 3). In addtition, comparing rows 3            the performance gain from using smaller patches comes at
+and 9 highlights the importance of the momentum encoder                 the expense of throughput: when using 5×5 patches, the
+for performance. Second, in rows 4 and 5, we observe that               throughput falls to 44 im/s, vs 180 im/s for 8×8 patches.
+multi-crop training and the cross-entropy loss in DINO are
+important components to obtain good features. We also ob-                5.2. Impact of the choice of Teacher Network
+serve that adding a predictor to the student network has little              In this ablation, we experiment with different teacher
+impact (row 6) while it is critical in BYOL to prevent col-              network to understand its role in DINO. We compare models
+lapse [15, 28]. For completeness, we propose in Appendix B               trained for 300 epochs using the k-NN protocol.
+an extended version of this ablation study.
+
+                                                                         Building different teachers from the student. In
+Importance of the patch size. In Fig. 5, we compare the                  Fig. 6(right), we compare different strategies to build the
+k-NN classification performance of DeiT-S models trained                 teacher from previous instances of the student besides the
+        72                             Teacher           Top-1
+                                                                                           sharpening                          centering            both
+
+val acc@1
+                                                                                     8
+        68
+
+                                                                    Target Entropy
+                                       Student copy        0.1
+
+
+                                                                                                               KL divergence
+                       Student         Previous iter       0.1                       6                                         2
+                       Teacher         Previous epoch     66.6                       4
+        64                             Momentum           72.8                       2
+             0   100 200         300                                                 0                                         0
+                   epochs
+                                                                                      0     epochs        100                   0          epochs      100
+Figure 6: Top-1 accuracy on ImageNet validation with k-NN classi-
+fier. (left) Comparison between the performance of the momentum      Figure 7: Collapse study. (left): evolution of the teacher’s target
+teacher and the student during training. (right) Comparison be-      entropy along training epochs; (right): evolution of KL divergence
+tween different types of teacher network. The momentum encoder       between teacher and student outputs.
+leads to the best performance but is not the only viable option.
+                                                                     Table 8: Time and memory requirements. We show total running
+                                                                     time and peak memory per GPU (“mem.”) when running DeiT-S/16
+momentum teacher. First we consider using the student net-           DINO models on two 8-GPU machines. We report top-1 ImageNet
+work from a previous epoch as a teacher. This strategy has           val acc with linear evaluation for several variants of multi-crop,
+                                                                     each having a different level of compute requirement.
+been used in the memory bank of Wu et al. [70] and as a
+form of hard-distillation in Caron et al. [8] and Asano et
+al. [2]. Second, we consider using the student network from                                             100 epochs                    300 epochs
+the previous iteration, as well as a copy of the student for the       multi-crop                       top-1           time         top-1     time mem.
+teacher. In our setting, using a teacher based on a recent ver-
+                                                                       2×2242                           67.8        15.3h            72.5     45.9h 9.3G
+sion of the student does not converge. This setting requires
+                                                                       2×2242 + 2×962                   71.5        17.0h            74.5     51.0h 10.5G
+more normalizations to work. Interestingly, we observe that
+                                                                       2×2242 + 6×962                   73.8        20.3h            75.9     60.9h 12.9G
+using a teacher from the previous epoch does not collapse,
+                                                                       2×2242 + 10×962                  74.6        24.2h            76.1     72.6h 15.4G
+providing performance in the k-NN evaluation competitive
+with existing frameworks such as MoCo-v2 or BYOL. While
+using a momentum encoder clearly provides superior perfor-          collapse: regardless of the input, the model output is uniform
+mance to this naive teacher, this finding suggests that there       along all the dimensions or dominated by one dimension.
+is a space to investigate alternatives for the teacher.             The centering avoids the collapse induced by a dominant
+                                                                    dimension, but encourages an uniform output. Sharpening
+Analyzing the training dynamic. To further understand               induces the opposite effect. We show this complementarity
+the reasons why a momentum teacher works well in our                by decomposing the cross-entropy H into an entropy h and
+framework, we study its dynamic during the training of a            the Kullback-Leibler divergence (“KL”) DKL :
+ViT in the left panel of Fig. 6. A key observation is that
+this teacher constantly outperforms the student during the                                H(Pt , Ps ) = h(Pt ) + DKL (Pt |Ps ).                            (5)
+training, and we observe the same behavior when training            A KL equal to zero indicates a constant output, and hence
+with a ResNet-50 (Appendix D). This behavior has not been           a collapse. In Fig. 7, we plot the entropy and KL during
+observed by other frameworks also using momentum [31,               training with and without centering and sharpening. If one
+28], nor when the teacher is built from the previous epoch.         operation is missing, the KL converges to zero, indicating
+We propose to interpret the momentum teacher in DINO                a collapse. However, the entropy h converges to different
+as a form of Polyak-Ruppert averaging [49, 57] with an              values: 0 with no centering and − log(1/K) with no sharp-
+exponentially decay. Polyak-Ruppert averaging is often used         ening, indicating that both operations induce different form
+to simulate model ensembling to improve the performance             of collapse. Applying both operations balances these effects
+of a network at the end of the training [36]. Our method can        (see study of the sharpening parameter τt in Appendix D).
+be interpreted as applying Polyak-Ruppert averaging during
+the training to constantly build a model ensembling that has         5.4. Compute requirements
+superior performances. This model ensembling then guides                In Tab. 8, we detail the time and GPU memory require-
+the training of the student network [62].                            ments when running DeiT-S/16 DINO models on two 8-
+                                                                     GPU machines. We report results with several variants of
+5.3. Avoiding collapse
+                                                                     multi-crop training, each having a different level of compute
+   We study the complementarity role of centering and tar-           requirement. We observe in Tab. 8 that using multi-crop im-
+get sharpening to avoid collapse. There are two forms of             proves the accuracy / running-time tradeoff for DINO runs.
+For example, the performance is 72.5% after 46 hours of           ViT. In the future, we plan to explore if pretraining a large
+training without multi-crop (i.e. 2×2242 ) while DINO in          ViT model with DINO on random uncurated images could
+2×2242 +10×962 crop setting reaches 74.6% in 24 hours only.       push the limits of visual features [26].
+This is an improvement of +2% while requiring 2× less time,
+though the memory usage is higher (15.4G versus 9.3G). We
+                                                                  Acknowledgement. We thank Mahmoud Assran, Matthijs
+observe that the performance boost brought with multi-crop
+                                                                  Douze, Allan Jabri, Jure Zbontar, Alaaeldin El-Nouby, Y-
+cannot be caught up by more training in the 2×2242 setting,
+                                                                  Lan Boureau, Kaiming He, Thomas Lucas as well as the
+which shows the value of the “local-to-global” augmentation.
+                                                                  Thoth and FAIR teams for their help, support and discussions
+Finally, the gain from adding more views diminishes (+.2%
+                                                                  around this project. Julien Mairal was funded by the ERC
+form 6× to 10× 962 crops) for longer trainings.
+                                                                  grant number 714381 (SOLARIS project) and by ANR 3IA
+   Overall, training DINO with Vision Transformers
+                                                                  MIAI@Grenoble Alpes (ANR-19-P3IA-0003).
+achieves 76.1 top-1 accuracy using two 8-GPU servers for 3
+days. This result outperforms state-of-the-art self-supervised
+systems based on convolutional networks of comparable             References
+sizes with a significant reduction of computational require-       [1] Rohan Anil, Gabriel Pereyra, Alexandre Passos, Robert Or-
+ments [28, 10]. Our code is available to train self-supervised         mandi, George E Dahl, and Geoffrey E Hinton. Large scale
+ViT on a limited number of GPUs.                                       distributed neural network training through online distillation.
+                                                                       arXiv preprint arXiv:1804.03235, 2018. 3
+5.5. Training with small batches                                   [2] Yuki Markus Asano, Christian Rupprecht, and Andrea
+                                                                       Vedaldi. Self-labelling via simultaneous clustering and repre-
+                                    Table 9: Effect of batch           sentation learning. In ICLR, 2020. 2, 9
+bs      128   256    512   1024     sizes. Top-1 with k-NN         [3] Mahmoud Assran, Nicolas Ballas, Lluis Castrejon, and
+top-1   57.9 59.1 59.6     59.9     for models trained for 100         Michael Rabbat. Recovering petaflops in contrastive semi-
+                                    epochs without multi-crop.         supervised learning of visual representations. preprint
+                                                                       arXiv:2006.10803, 2020. 14
+    In Tab. 9, we study the impact of the batch size on the        [4] Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio.
+features obtained with DINO. We also study the impact                  Neural machine translation by jointly learning to align and
+of the smooth parameter m used in the centering update                 translate. preprint arXiv:1409.0473, 2014. 5
+rule of Eq. 4 in Appendix D. We scale the learning rate lin-       [5] Maxim Berman, Hervé Jégou, Vedaldi Andrea, Iasonas
+early with the batch size [27]: lr = 0.0005 ∗ batchsize/256.           Kokkinos, and Matthijs Douze. MultiGrain: a unified im-
+                                                                       age embedding for classes and instances. arXiv preprint
+Tab. 9 confirms that we can train models to high perfor-
+                                                                       arXiv:1902.05509, 2019. 6
+mance with small batches. Results with the smaller batch
+                                                                   [6] Piotr Bojanowski and Armand Joulin. Unsupervised learning
+sizes (bs = 128) are slightly below our default training setup
+                                                                       by predicting noise. In ICML, 2017. 2
+of bs = 1024, and would certainly require to re-tune hyper-
+                                                                   [7] Cristian Buciluǎ, Rich Caruana, and Alexandru Niculescu-
+parameters like the momentum rates for example. Note that
+                                                                       Mizil. Model compression. In SIGKDD, 2006. 3
+the experiment with batch size of 128 runs on only 1 GPU.
+                                                                   [8] Mathilde Caron, Piotr Bojanowski, Armand Joulin, and
+We have explored training a model with a batch size of 8,
+                                                                       Matthijs Douze. Deep clustering for unsupervised learning of
+reaching 35.2% after 50 epochs, showing the potential for              visual features. In ECCV, 2018. 2, 4, 9
+training large models that barely fit an image per GPU.
+                                                                   [9] Mathilde Caron, Piotr Bojanowski, Julien Mairal, and Ar-
+                                                                       mand Joulin. Unsupervised pre-training of image features on
+6. Conclusion                                                          non-curated data. In ICCV, 2019. 2, 16
+   In this work, we have shown the potential of self-             [10] Mathilde Caron, Ishan Misra, Julien Mairal, Priya Goyal,
+                                                                       Piotr Bojanowski, and Armand Joulin. Unsupervised learn-
+supervised pretraining a standard ViT model, achieving per-
+                                                                       ing of visual features by contrasting cluster assignments. In
+formance that are comparable with the best convnets specifi-
+                                                                       NeurIPS, 2020. 1, 2, 3, 4, 5, 7, 8, 10, 14, 15, 16, 17, 18
+cally designed for this setting. We have also seen emerged
+                                                                  [11] Mia Xu Chen, Orhan Firat, Ankur Bapna, Melvin Johnson,
+two properties that can be leveraged in future applications:
+                                                                       Wolfgang Macherey, George Foster, Llion Jones, Niki Parmar,
+the quality of the features in k-NN classification has a po-           Mike Schuster, Zhifeng Chen, et al. The best of both worlds:
+tential for image retrieval where ViT are already showing              Combining recent advances in neural machine translation.
+promising results [21]. The presence of information about              preprint arXiv:1804.09849, 2018. 5
+the scene layout in the features can also benefit weakly super-   [12] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geof-
+vised image segmentation. However, the main result of this             frey Hinton. A simple framework for contrastive learning of
+paper is that we have evidences that self-supervised learning          visual representations. preprint arXiv:2002.05709, 2020. 2,
+could be the key to developing a BERT-like model based on              3, 5, 15, 17
+[13] Ting Chen, Simon Kornblith, Kevin Swersky, Mohammad                     ersch, Bernardo Avila Pires, Zhaohan Daniel Guo, Moham-
+     Norouzi, and Geoffrey Hinton. Big self-supervised models                mad Gheshlaghi Azar, Bilal Piot, Koray Kavukcuoglu, Rémi
+     are strong semi-supervised learners. In NeurIPS, 2020. 3, 5,            Munos, and Michal Valko. Bootstrap your own latent: A new
+     6, 14                                                                   approach to self-supervised learning. In NeurIPS, 2020. 2, 3,
+[14] Xinlei Chen, Haoqi Fan, Ross Girshick, and Kaiming He.                  4, 5, 8, 9, 10, 14, 15, 16, 18
+     Improved baselines with momentum contrastive learning.             [29] Shir Gur, Ameen Ali, and Lior Wolf. Visualization of su-
+     preprint arXiv:2003.04297, 2020. 5, 8, 14, 15, 18                       pervised and self-supervised neural networks via attribution
+[15] Xinlei Chen and Kaiming He. Exploring simple siamese                    guided factorization. preprint arXiv:2012.02166, 2020. 7
+     representation learning. preprint arXiv:2011.10566, 2020. 2,       [30] Michael Gutmann and Aapo Hyvärinen. Noise-contrastive
+     3, 4, 8, 14, 15, 16, 18                                                 estimation: A new estimation principle for unnormalized
+[16] Marco Cuturi. Sinkhorn distances: Lightspeed computation                statistical models. In International Conference on Artificial
+     of optimal transport. In NeurIPS, 2013. 15                              Intelligence and Statistics, 2010. 2
+[17] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina             [31] Kaiming He, Haoqi Fan, Yuxin Wu, Saining Xie, and Ross
+     Toutanova. Bert: Pre-training of deep bidirectional transform-          Girshick. Momentum contrast for unsupervised visual rep-
+     ers for language understanding. preprint arXiv:1810.04805,              resentation learning. In CVPR, 2020. 1, 2, 3, 4, 5, 7, 9,
+     2018. 1, 4, 5, 18                                                       16
+[18] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov,             [32] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun.
+     Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner,                     Deep residual learning for image recognition. In CVPR, 2016.
+     Mostafa Dehghani, Matthias Minderer, Georg Heigold, Syl-                4, 5
+     vain Gelly, et al. An image is worth 16x16 words: Transform-       [33] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the
+     ers for image recognition at scale. preprint arXiv:2010.11929,          knowledge in a neural network. preprint arXiv:1503.02531,
+     2020. 1, 4, 5, 13                                                       2015. 2, 3
+[19] Alexey Dosovitskiy, Philipp Fischer, Jost Tobias Springen-         [34] Jiabo Huang, Qi Dong, Shaogang Gong, and Xiatian Zhu.
+     berg, Martin Riedmiller, and Thomas Brox. Discriminative                Unsupervised deep learning by neighbourhood discovery. In
+     unsupervised feature learning with exemplar convolutional               ICML, 2019. 2
+     neural networks. TPAMI, 2016. 2
+                                                                        [35] Allan Jabri, Andrew Owens, and Alexei A Efros. Space-time
+[20] Matthijs Douze, Hervé Jégou, Harsimrat Sandhawalia, Lau-              correspondence as a contrastive random walk. 2020. 7
+     rent Amsaleg, and Cordelia Schmid. Evaluation of gist de-
+                                                                        [36] Sébastien Jean, Kyunghyun Cho, Roland Memisevic, and
+     scriptors for web-scale image search. In CIVR, 2009. 6
+                                                                             Yoshua Bengio. On using very large target vocabulary for
+[21] Alaaeldin El-Nouby, Natalia Neverova, Ivan Laptev, and
+                                                                             neural machine translation. preprint arXiv:1412.2007, 2014.
+     Hervé Jégou. Training vision transformers for image retrieval.
+                                                                             4, 9
+     preprint arXiv:2102.05644, 2021. 10
+                                                                        [37] Guillaume Klein, Yoon Kim, Yuntian Deng, Jean Senellart,
+[22] Aleksandr Ermolov, Aliaksandr Siarohin, Enver Sangineto,
+                                                                             and Alexander M Rush. Opennmt: Open-source toolkit for
+     and Nicu Sebe. Whitening for self-supervised representation
+                                                                             neural machine translation. preprint arXiv:1701.02810, 2017.
+     learning. preprint arXiv:2007.06346, 2020. 2
+                                                                             5
+[23] Mark Everingham, Luc Van Gool, Christopher KI Williams,
+                                                                        [38] Zihang Lai, Erika Lu, and Weidi Xie. Mast: A memory-
+     John Winn, and Andrew Zisserman. The pascal visual object
+                                                                             augmented self-supervised tracker. In CVPR, 2020. 7
+     classes (voc) challenge. IJCV, 2010. 13
+[24] Zhiyuan Fang, Jianfeng Wang, Lijuan Wang, Lei Zhang,               [39] Dong-Hyun Lee et al. Pseudo-label: The simple and efficient
+     Yezhou Yang, and Zicheng Liu. Seed: Self-supervised distil-             semi-supervised learning method for deep neural networks.
+     lation for visual representation. 2021. 3                               In Workshop on challenges in representation learning, ICML,
+                                                                             2013. 3
+[25] Spyros Gidaris, Andrei Bursuc, Gilles Puy, Nikos Komodakis,
+     Matthieu Cord, and Patrick Pérez. Online bag-of-visual-           [40] Junnan Li, Pan Zhou, Caiming Xiong, and Steven C.H. Hoi.
+     words generation for unsupervised representation learning.              Prototypical contrastive learning of unsupervised representa-
+     arXiv preprint arXiv:2012.11552, 2020. 2, 5                             tions. ICLR, 2021. 2
+[26] Priya Goyal, Mathilde Caron, Benjamin Lefaudeux, Min               [41] Ilya Loshchilov and Frank Hutter. Sgdr: Stochastic gradient
+     Xu, Pengchao Wang, Vivek Pai, Mannat Singh, Vitaliy                     descent with warm restarts. preprint arXiv:1608.03983, 2016.
+     Liptchinsky, Ishan Misra, Armand Joulin, et al. Self-                   5
+     supervised pretraining of visual features in the wild. preprint    [42] Ilya Loshchilov and Frank Hutter. Fixing weight decay regu-
+     arXiv:2103.01988, 2021. 10                                              larization in adam. 2018. 5
+[27] Priya Goyal, Piotr Dollár, Ross Girshick, Pieter Noord-           [43] Julien Mairal. Cyanure: An open-source toolbox for empirical
+     huis, Lukasz Wesolowski, Aapo Kyrola, Andrew Tulloch,                   risk minimization for python, c++, and soon more. preprint
+     Yangqing Jia, and Kaiming He. Accurate, large minibatch                 arXiv:1912.08165, 2019. 13
+     sgd: Training imagenet in 1 hour. preprint arXiv:1706.02677,       [44] Maria-Elena Nilsback and Andrew Zisserman. Automated
+     2017. 5, 10                                                             flower classification over a large number of classes. In 2008
+[28] Jean-Bastien Grill, Florian Strub, Florent Altché, Corentin            Sixth Indian Conference on Computer Vision, Graphics &
+     Tallec, Pierre H Richemond, Elena Buchatskaya, Carl Do-                 Image Processing, 2008. 13
+[45] Mehdi Noroozi, Ananth Vinjimoor, Paolo Favaro, and Hamed         [62] Antti Tarvainen and Harri Valpola. Mean teachers are
+     Pirsiavash. Boosting self-supervised learning via knowledge           better role models: Weight-averaged consistency targets
+     transfer. In CVPR, 2018. 3                                            improve semi-supervised deep learning results. preprint
+[46] Seoung Wug Oh, Joon-Young Lee, Ning Xu, and Seon Joo                  arXiv:1703.01780, 2017. 3, 4, 9, 17
+     Kim. Video object segmentation using space-time memory           [63] Bart Thomee, David A Shamma, Gerald Friedland, Benjamin
+     networks. In ICCV, 2019. 7                                            Elizalde, Karl Ni, Douglas Poland, Damian Borth, and Li-Jia
+[47] Hieu Pham, Qizhe Xie, Zihang Dai, and Quoc V Le. Meta                 Li. Yfcc100m: The new data in multimedia research. arXiv
+     pseudo labels. preprint arXiv:2003.10580, 2020. 14                    preprint arXiv:1503.01817, 2015. 6
+[48] James Philbin, Ondrej Chum, Michael Isard, Josef Sivic,          [64] Yonglong Tian, Chen Sun, Ben Poole, Dilip Krishnan,
+     and Andrew Zisserman. Lost in quantization: Improving                 Cordelia Schmid, and Phillip Isola. What makes for good
+     particular object retrieval in large scale image databases. In        views for contrastive learning. NeurIPS, 2020. 5
+     CVPR, 2008. 6                                                    [65] Giorgos Tolias, Ronan Sicre, and Hervé Jégou. Particular
+[49] Boris T Polyak and Anatoli B Juditsky. Acceleration of                object retrieval with integral max-pooling of cnn activations.
+     stochastic approximation by averaging. SIAM journal on                arXiv preprint arXiv:1511.05879, 2015. 6
+     control and optimization, 30(4):838–855, 1992. 4, 9, 17
+                                                                      [66] Hugo Touvron, Matthieu Cord, Matthijs Douze, Francisco
+[50] Jordi Pont-Tuset, Federico Perazzi, Sergi Caelles, Pablo Ar-
+                                                                           Massa, Alexandre Sablayrolles, and Hervé Jégou. Training
+     beláez, Alex Sorkine-Hornung, and Luc Van Gool. The
+                                                                           data-efficient image transformers & distillation through atten-
+     2017 davis challenge on video object segmentation. preprint
+                                                                           tion. preprint arXiv:2012.12877, 2020. 1, 4, 5, 6, 7, 8, 13,
+     arXiv:1704.00675, 2017. 7
+                                                                           17
+[51] Filip Radenović, Ahmet Iscen, Giorgos Tolias, Yannis
+     Avrithis, and Ondřej Chum. Revisiting oxford and paris:         [67] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+     Large-scale image retrieval benchmarking. 2018. 6                     reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+                                                                           Polosukhin. Attention is all you need. In NeurIPS, 2017. 1, 4
+[52] Filip Radenović, Giorgos Tolias, and Ondřej Chum. Fine-
+     tuning cnn image retrieval with no human annotation. IEEE        [68] Xiaolong Wang, Allan Jabri, and Alexei A Efros. Learning
+     transactions on pattern analysis and machine intelligence,            correspondence from the cycle-consistency of time. In CVPR,
+     2018. 6                                                               2019. 7
+[53] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario         [69] Tobias Weyand, Andre Araujo, Bingyi Cao, and Jack Sim.
+     Amodei, and Ilya Sutskever. Language models are unsuper-              Google landmarks dataset v2-a large-scale benchmark for
+     vised multitask learners. 1                                           instance-level recognition and retrieval. 2020. 6
+[54] Ilija Radosavovic, Raj Prateek Kosaraju, Ross Girshick, Kaim-    [70] Zhirong Wu, Yuanjun Xiong, Stella X Yu, and Dahua Lin.
+     ing He, and Piotr Dollár. Designing network design spaces.           Unsupervised feature learning via non-parametric instance
+     In CVPR, 2020. 13                                                     discrimination. In CVPR, 2018. 2, 4, 5, 9, 18
+[55] Jerome Revaud, Jon Almazán, Rafael S Rezende, and Cesar         [71] Junyuan Xie, Ross Girshick, and Ali Farhadi. Unsupervised
+     Roberto de Souza. Learning with average precision: Training           deep embedding for clustering analysis. In ICML, 2016. 2
+     image retrieval with a listwise loss. In ICCV, 2019. 6           [72] Qizhe Xie, Zihang Dai Dai, Eduard Hovy, Minh-Thang Lu-
+[56] Pierre H Richemond, Jean-Bastien Grill, Florent Altché,              ong, and Quoc V. Le. Unsupervised data augmentation for
+     Corentin Tallec, Florian Strub, Andrew Brock, Samuel Smith,           consistency training. preprint arXiv:1904.12848, 2020. 14
+     Soham De, Razvan Pascanu, Bilal Piot, et al. Byol works even     [73] Qizhe Xie, Minh-Thang Luong, Eduard Hovy, and Quoc V
+     without batch statistics. preprint arXiv:2010.10241, 2020. 2,         Le. Self-training with noisy student improves imagenet clas-
+     4                                                                     sification. In CVPR, 2020. 3
+[57] David Ruppert. Efficient estimations from a slowly conver-
+                                                                      [74] Haohang Xu, Xiaopeng Zhang, Hao Li, Lingxi Xie, Hongkai
+     gent robbins-monro process. Technical report, 1988. 4, 9
+                                                                           Xiong, and Qi Tian. Seed the views: Hierarchical seman-
+[58] Olga Russakovsky, Jia Deng, Hao Su, Jonathan Krause, San-
+                                                                           tic alignment for contrastive representation learning. arXiv
+     jeev Satheesh, Sean Ma, Zhiheng Huang, Andrej Karpathy,
+                                                                           preprint arXiv:2012.02733, 2021. 15
+     Aditya Khosla, Michael Bernstein, Alexander C Berg, and Li
+     Fei-Fei. Imagenet large scale visual recognition challenge.      [75] Qiantong Xu, Tatiana Likhomanenko, Jacob Kahn, Awni
+     IJCV, 2015. 1, 5, 13                                                  Hannun, Gabriel Synnaeve, and Ronan Collobert. Iter-
+[59] Tim Salimans and Diederik P Kingma. Weight normalization:             ative pseudo-labeling for speech recognition. preprint
+     A simple reparameterization to accelerate training of deep            arXiv:2005.09267, 2020. 3
+     neural networks. NeurIPS, 2016. 4, 16                            [76] I Zeki Yalniz, Hervé Jégou, Kan Chen, Manohar Paluri, and
+[60] Mert Bulent Sariyildiz, Yannis Kalantidis, Diane Larlus, and          Dhruv Mahajan. Billion-scale semi-supervised learning for
+     Karteek Alahari. Concept generalization in visual representa-         image classification. preprint arXiv:1905.00546, 2019. 3
+     tion learning. arXiv preprint arXiv:2012.05649, 2020. 7          [77] Jianwei Yang, Devi Parikh, and Dhruv Batra. Joint unsuper-
+[61] Kihyuk Sohn, David Berthelot, Chun-Liang Li, Zizhao Zhang,            vised learning of deep representations and image clusters. In
+     Nicholas Carlini, Ekin D Cubuk, Alex Kurakin, Han Zhang,              CVPR, 2016. 2
+     and Colin Raffel. Fixmatch: Simplifying semi-supervised          [78] Jure Zbontar, Li Jing, Ishan Misra, Yann LeCun, and Stéphane
+     learning with consistency and confidence. In NeurIPS, 2020.           Deny. Barlow twins: Self-supervised learning via redundancy
+     14                                                                    reduction. arXiv preprint arXiv:2103.03230, 2021. 2, 5
+[79] Richard Zhang, Phillip Isola, and Alexei A Efros. Colorful    Table 11: ImageNet classification with different pretraining.
+     image colorization. In ECCV, 2016. 5                          Top-1 accuracy on ImageNet for supervised ViT-B/16 models using
+                                                                   different pretrainings or using an additional pretrained convnet to
+[80] Hengshuang Zhao, Jiaya Jia, and Vladlen Koltun. Exploring
+                                                                   guide the training. The methods use different image resolution
+     self-attention for image recognition. In CVPR, 2020. 1
+                                                                   (“res.”) and training procedure (“tr. proc.”), i.e., data augmentation
+[81] Bolei Zhou, Agata Lapedriza, Jianxiong Xiao, Antonio Tor-     and optimization. “MPP” is Masked Patch Prediction.
+     ralba, and Aude Oliva. Learning deep features for scene
+     recognition using places database. In NeurIPS, 2014. 13
+                                                                             Pretraining
+[82] Chengxu Zhuang, Alex Lin Zhai, and Daniel Yamins. Local
+     aggregation for unsupervised learning of visual embeddings.    method               data            res.     tr. proc.    Top-1
+     In ICCV, 2019. 2
+                                                                    Pretrain on additional data
+                                                                    MMP           JFT-300M               384        [18]        79.9
+Appendix                                                            Supervised JFT-300M                  384        [18]        84.2
+
+A. Additional Results                                               Train with additional model
+                                                                    Rand. init.        -                 224        [66]        83.4
+k-NN classification. In Tab. 10, we evaluate the frozen
+                                                                    No additional data nor model
+representations given by ResNet-50 or DeiT-small pre-
+                                                                    Rand. init.        -                 224        [18]        77.9
+trained with DINO with two evaluation protocols: linear
+                                                                    Rand. init.        -                 224        [66]        81.8
+or k-NN. For both evaluations, we extract representations
+                                                                    Supervised      ImNet                224        [66]        81.9
+from a pre-trained network without using any data augmen-
+                                                                    DINO            ImNet                224        [66]        82.8
+tation. Then, we perform classification either with weighted
+k-NN or with a linear regression learned with cyanure
+library [43]. In Tab. 10 we see that DeiT-S accuracies are
+better than accuracies obtained with RN50 both with a linear       Self-supervised ImageNet pretraining of ViT. In this ex-
+or a k-NN classifier. However, the performance gap when            periment, we study the impact of pretraining a supervised
+using the k-NN evaluation is much more significant than            ViT model with our method. In Tab. 11, we compare the
+when considering linear evaluation. For example on Ima-            performance of supervised ViT models that are initialized
+geNet 1%, DeiT-S outperforms ResNet-50 by a large margin           with different pretraining or guided during training with an
+of +14.1% with k-NN evaluation. This suggests that trans-          additional pretrained convnet. The first set of models are
+formers architectures trained with DINO might offer more           pretrained with and without supervision on the large curated
+model flexibility that benefits the k-NN evaluation. K-NN          dataset composed of 300M images. The second set of mod-
+classifiers have the great advantage of being fast and light       els are trained with hard knowledge distillation from a pre-
+to deploy, without requiring any domain adaptation. Over-          trained supervised RegNetY [54]. The last set of models do
+all, ViT trained with DINO provides features that combine          not use any additional data nor models, and are initialized ei-
+particularly well with k-NN classifiers.                           ther randomly or after a pretraining with DINO on ImageNet.
+                                                                   Compare to random initialization, pretraining with DINO
+Table 10: k-NN and linear evaluation for DeiT-S/16 and ResNet-     leads to a performance gain of +1%. This is not caused by a
+50 pre-trained with DINO. We use ImageNet-1k [58] (“Inet”),        longer training since pretraining with supervision instead of
+Places205 [81], PASCAL VOC [23] and Oxford-102 flowers             DINO does not improve performance. Using self-supervised
+(“FLOWERS”) [44]. ViT trained with DINO provides features          pretraining reduces the gap with models pretrained on extra
+that are particularly k-NN friendly.                               data or distilled from a convnet.
+
+                     Logistic                   k-NN
+              RN50    DeiT-S    ∆        RN50    DeiT-S     ∆      Low-shot learning on ImageNet. We evaluate the fea-
+                                                                   tures obtained with DINO applied on DeiT-S on low-shot
+Inet 100%     72.1     75.7      3.6     67.5     74.5     7.0
+Inet 10%      67.8     72.2      4.4     59.3     69.1     9.8
+                                                                   learning. In Tab. 12, we report the validation accuracy of
+Inet 1%       55.1     64.5      9.4     47.2     61.3     14.1    a logistic regression trained on frozen features (FROZEN)
+Pl. 10%       53.4     52.1     -1.3     46.9     48.6     1.7     with 1% and 10% labels. The logistic regression is trained
+Pl. 1%        46.5     46.3     -0.2     39.2     41.3     2.1     with the cyanure library [43]. When comparing mod-
+VOC07         88.9     89.2      0.3     84.9     88.0     3.1     els with a similar number of parameters and image/sec, we
+FLOWERS       95.6     96.4      0.8     87.9     89.1     1.2     observe that our features are on par with state-of-the-art
+Average ∆                       2.4                        5.6     semi-supervised models. Interestingly, this performance
+                                                                   is obtained by training a multi-class logistic regression on
+                                                                   frozen features, without data augmentation nor finetuning.
+Figure 8: Self-attention for a set of reference points. We visualize the self-attention module from the last block of a DeiT-S/8 trained with
+DINO. The network is able to separate objects, though it has been trained with no supervision at all.
+
+
+Table 12: Low-shot learning on ImageNet with frozen ViT fea-             Table 13: Methodology comparison for DEIT-small and
+tures. We train a logistic regression on frozen features (FROZEN).       ResNet-50. We report ImageNet linear and k-NN evaluations
+Note that this FROZEN evaluation is performed without any fine-          validation accuracy after 300 epochs pre-training. All numbers are
+tuning nor data augmentation. We report top-1 accuracy. For              run by us and match or outperform published results.
+reference, we show previously published results that uses finetun-
+ing and semi-supervised learning.                                                                ResNet-50              DeiT-small
+
+                                                        Top 1                Method            Linear    k-NN          Linear     k-NN
+Method                   Arch              Param.      1%    10%             MoCo-v2            71.1      62.9          71.6      62.0
+Self-supervised pretraining with finetuning                                  BYOL               72.7      65.4          71.4      66.6
+UDA [72]                 RN50                23        –      68.1           SwAV               74.1      65.4          71.8      64.7
+SimCLRv2 [13]            RN50                23       57.9    68.4
+                                                                             DINO               74.5      65.6          76.1      72.8
+BYOL [28]                RN50                23       53.2    68.8
+SwAV [10]                RN50                23       53.9    70.2
+SimCLRv2 [15]            RN50w4             375       63.0    74.4       Table 14: Relation to SwAV. We vary the operation on the teacher
+BYOL [28]                RN200w2            250       71.2    77.7       output between centering, a softmax applied over the batch di-
+                                                                         mension and the Sinkhorn-Knopp algorithm. We also ablate the
+Semi-supervised methods
+                                                                         Momentum encoder by replacing it with a hard copy of the student
+SimCLRv2+KD [13] RN50                        23       60.0    70.5
+                                                                         with a stop-gradient as in SwAV. Models are run for 300 epochs
+SwAV+CT [3]           RN50                   23        –      70.8
+                                                                         with DeiT-S/16. We report top-1 accuracy on ImageNet linear
+FixMatch [61]         RN50                   23        –      71.5
+                                                                         evaluation.
+MPL [47]              RN50                   23        –      73.9
+SimCLRv2+KD [13] RN152w3+SK                  794      76.6    80.9
+                                                                              Method      Momentum               Operation            Top-1
+Frozen self-supervised features
+DINO - FROZEN            DeiT-S/16            21      64.5    72.2       1    DINO              X             Centering                76.1
+                                                                         2    –                 X          Softmax(batch)              75.8
+                                                                         3    –                 X          Sinkhorn-Knopp              76.0
+                                                                         4    –                               Centering                 0.1
+B. Methodology Comparison                                                5    –                            Softmax(batch)              72.2
+                                                                         6    SwAV                         Sinkhorn-Knopp              71.8
+    We compare the performance of different self-supervised
+frameworks, MoCo-v2 [14], SwAV [10] and BYOL [28]
+when using convnet or ViT. In Tab. 13, we see that when                  Relation to SwAV. In Tab. 14, we evaluate the differences
+trained with ResNet-50 (convnet), DINO performs on par                   between DINO and SwAV: the presence of the momentum
+with SwAV and BYOL. However, DINO unravels its poten-                    encoder and the operation on top of the teacher output. In
+tial with DeiT-S (ViT), outperforming MoCo-v2, SwAV and                  absence of the momentum, a copy of the student with a stop-
+BYOL by large margins (+4.3% with linear and +6.2% with                  gradient is used. We consider three operations on the teacher
+k-NN evaluations). In the rest of this section, we perform               output: Centering, Sinkhorn-Knopp or a Softmax
+ablations to better understand the performance of DINO                   along the batch axis. The Softmax is similar to a single
+applied to ViT. In particular, we provide a detailed com-                Sinkhorn-Knopp iteration as detailed in the next paragraph.
+parison with methods that either use a momentum encoder,                 First, these ablations show that using a momentum encoder
+namely MoCo-v2 and BYOL, and methods that use multi-                     significantly improves the performance for ViT (3 versus 6,
+crop, namely SwAV.                                                       and 2 versus 5). Second, the momentum encoder also avoids
+collapse when using only centering (row 1). In the absence        Table 15: Relation to MoCo-v2 and BYOL. We ablate the com-
+of momentum, centering the outputs does not work (4) and          ponents that differ between DINO, MoCo-v2 and BYOL: the loss
+more advanced operations are required (5, 6). Overall, these      function (cross-entropy, CE, versus InfoNCE, INCE, versus mean-
+                                                                  square error, MSE), the multi-crop training, the centering operator,
+ablations highlight the importance of the momentum en-
+                                                                  the batch normalization in the projection heads and the student
+coder, not only for performance but also to stabilize training,   predictor. Models are run for 300 epochs with DeiT-S/16. We
+removing the need for normalization beyond centering.             report top-1 accuracy on ImageNet linear evaluation.
+
+Details on the Softmax(batch) variant. The itera-                      Method      Loss    multi-crop Center. BN Pred. Top-1
+tive Sinkhorn-Knopp algorithm [16] used in SwAV [10] is
+                                                                  1    DINO         CE         X           X                    76.1
+implemented simply with the following PyTorch style code.
+                                                                  2    –           MSE         X           X                    62.4
+# x is n-by-K                                                     3    –            CE         X           X             X      75.6
+# tau is Sinkhorn regularization param                            4    –            CE                     X                    72.5
+x = exp(x / tau)
+for _ in range(num_iters): # 1 iter of Sinkhorn                   5    MoCov2 INCE                                X             71.4
+  # total weight per dimension (or cluster)                       6           INCE             X                  X             73.4
+  c = sum(x, dim=0, keepdim=True)
+  x /= c                                                          7    BYOL        MSE                            X      X      71.4
+                                                                  8    –           MSE                            X              0.1
+  # total weight per sample                                       9    –           MSE                     X                    52.6
+  n = sum(x, dim=1, keepdim=True)                                 10   –           MSE         X                  X      X      64.8
+  # x sums to 1 for each sample (assignment)
+  x /= n
+
+When performing a single Sinkhorn iteration                       works particularly well with DINO and MoCo-v2, removing
+(num iters=1) the implementation can be highly                    it hurts performance by 2 − 4% (1 versus 4 and, 5 versus 6).
+simplified into only two lines of code, which is our              Adding multi-crop to BYOL does not work out-of-the-box
+softmax(batch) variant:                                           (7, 10) as detailed in Appendix E and further adaptation may
+x = softmax(x / tau, dim=0)                                       be required.
+x /= sum(x, dim=1, keepdim=True)
+
+We have seen in Tab. 14 that this highly simplified variant       Validating our implementation. We observe in Tab. 13
+of SwAV works competitively with SwAV. Intuitively, the           that our reproduction of BYOL, MoCo-v2, SwAV matches
+softmax operation on the batch axis allows to select for          or outperforms the corresponding published numbers with
+each dimension (or “cluster”) its best matches in the batch.      ResNet-50. Indeed, we obtain 72.7% for BYOL while [28]
+                                                                  report 72.5% in this 300-epochs setting. We obtain 71.1%
+                                                                  for MoCo after 300 epochs of training while [14] report
+Relation to MoCo-v2 and BYOL. In Tab. 15, we present
+                                                                  71.1% after 800 epochs of training. Our improvement com-
+the impact of ablating components that differ between DINO,
+                                                                  pared to the implementation of [14] can be explained by
+MoCo-v2 and BYOL: the choice of loss, the predictor in the
+                                                                  the use of a larger projection head (3-layer, use of batch-
+student head, the centering operation, the batch normaliza-
+                                                                  normalizations and projection dimension of 256).
+tion in the projection heads, and finally, the multi-crop aug-
+mentation. The loss in DINO is a cross-entropy on sharpened
+softmax outputs (CE) while MoCo-v2 uses the InfoNCE con-          Concurrent work CsMI. The concurrent work CsMI [74]
+trastive loss (INCE) and BYOL a mean squared error on             also exhibits strong performance with simple k-NN classi-
+l2-normalized outputs (MSE). No sharpening is applied with        fiers on ImageNet, even with convnets. As DINO, CsMI
+the MSE criterion. Though, DINO surprisingly still works          combines a momentum network and multi-crop training,
+when changing the loss function to MSE, but this signifi-         which we have seen are both crucial for good k-NN perfor-
+cantly alters the performance (see rows (1, 2) and (4, 9)).       mance in our experiments with ViTs. We believe studying
+We also observe that adding a predictor has little impact (1,     this work would help us identifying more precisely the com-
+3). However, in the case of BYOL, the predictor is critical       ponents important for good k-NN performance and leave
+to prevent collapse (7, 8) which is consistent with previous      this investigation for future work.
+studies [15, 28]. Interestingly, we observe that the teacher
+                                                                  C. Projection Head
+output centering avoids collapse without predictor nor batch
+normalizations in BYOL (7, 9), though with a significant             Similarly to other self-supervised frameworks, using a
+performance drop which can likely be explained by the fact        projection head [12] improves greatly the accuracy of our
+that our centering operator is designed to work in combina-       method. The projection head starts with a n-layer multi-
+tion with sharpening. Finally, we observe that multi-crop         layer perceptron (MLP). The hidden layers are 2048d and
+are with gaussian error linear units (GELU) activations. The                                                      weight normalized layer) while without bottleneck the to-
+last layer of the MLP is without GELU. Then we apply a                                                            tal number of linear layers is n in the head. In this table,
+`2 normalization and a weight normalized fully connected                                                          we report ImageNet top-1 k-NN evaluation accuracy after
+layer [15, 59] with K dimensions. This design is inspired                                                         100 epochs pre-training with DeiT-S/16. The output dimen-
+from the projection head with a “prototype layer” used in                                                         sionality K is set to 4096 in this experiment. We observe
+SwAV [10]. We do not apply batch normalizations.                                                                  that DINO training fails without the l2-normalization bot-
+                                                                                                                  tleneck when increasing the depth of the projection head.
+BN-free system. Unlike standard convnets, ViT architec-                                                           L2-normalization bottleneck stabilizes the training of DINO
+tures do not use batch normalizations (BN) by default. There-                                                     with deep projection head. We observe that increasing the
+                                                                                                                  depth of the projection head improves accuracy. Our default
+   DeiT-S, 100 epochs heads w/o BN heads w/ BN
+                                                                                                                  is to use a total of 4 linear layers: 3 are in the MLP and one
+                    k-NN top-1                           69.7                               68.6                  is after the l2 bottleneck.
+fore, when applying DINO to ViT we do not use any BN also
+in the projection heads. In this table we evaluate the impact                                                     Output dimension. In this table, we evaluate the effect
+of adding BN in the heads. We observe that adding BN in                                                           of varying the output dimensionality K. We observe that a
+the projection heads has little impact, showing that BN is not
+important in our framework. Overall, when applying DINO                                                            K              1024    4096      16384     65536         262144
+to ViT, we do not use any BN anywhere, making the system                                                           k-NN top-1     67.8     69.3      69.2      69.7          69.1
+entirely BN-free. This is a great advantage of DINO + ViT to
+work at state-of-the-art performance without requiring any                                                        large output dimensionality improves the performance. We
+BN. Indeed, training with BN typically slows down trainings                                                       note that the use of l2-normalization bottleneck permits to
+considerably, especially when these BN modules need to be                                                         use a large output dimension with a moderate increase in the
+synchronized across processes [31, 10, 9, 28].                                                                    total number of parameters. Our default is to use K equals
+                                                                                                                  to 65536 and d = 256 for the bottleneck.
+                       w/ l2-bottleneck                                         w/o l2-bottleneck
+
+                                                                                                                  GELU activations. By default, the activations used in ViT
+                             g(x)                                                      g(x)
+                                                                                                                  are gaussian error linear units (GELU). Therefore, for consis-
+                                    BxK                                                       BxK
+                                                                                                                  DeiT-S, 100 epochs      heads w/ GELU        heads w/ ReLU
+
+
+
+projection head h                                          projection head h
+                         linear layer
+                                    B x 256                                                                       k-NN top-1                      69.7                 68.9
+                       l2 normalization
+                                                                                                                  tency within the architecture, we choose to use GELU also
+                                    B x 256
+                         n-layer MLP                                              n-layer MLP
+                                                                                                                  in the projection head. We evaluate the effect of using ReLU
+                                                                                                                  instead of GELU in this table and observe that changing the
+                                    B x 384                                                   B x 384
+                                                                                                                  activation unit to ReLU has relatively little impact.
+                              f                                                         f
+
+                              x     B x 3 x 224 x 224                                   x     B x 3 x 224 x 224
+                                                                                                                  D. Additional Ablations
+                                                                                                                     We have detailed in the main paper that the combination
+Figure 9: Projection head design w/ or w/o l2-norm bottleneck.                                                    of centering and sharpening is important to avoid collapse in
+                                                                                                                  DINO. We ablate the hyperparameters for these two opera-
+                                                                                                                  tions in the following. We also study the impact of training
+L2-normalization bottleneck in projection head. We il-                                                            length and some design choices for the ViT networks.
+lustrate the design of the projection head with or without l2-
+normalization bottleneck in Fig. 9. We evaluate the accuracy
+                                                                                                                  Online centering. We study the impact of the smoothing
+  # proj. head linear layers     1      2      3       4                                                          parameters in the update rule for the center c used in the
+     w/ l2-norm bottleneck                               –                     62.2   68.0           69.3         output of the teacher network. The convergence is robust
+     w/o l2-norm bottleneck                             61.6                   62.9   0.1            0.1                 m                0        0.9      0.99   0.999
+of DINO models trained with or without l2-normalization                                                                  k-NN top-1      69.1     69.7      69.4      0.1
+bottleneck and we vary the number of linear layers in the
+projection head. With l2 bottleneck, the total number of                                                          to a wide range of smoothing, and the model only collapses
+linear layers is n + 1 (n from the MLP and 1 from the                                                             when the update is too slow, i.e., m = 0.999.
+                                                                                    DeiT-S/16 weights
+Sharpening. We enforce sharp targets by tuning the
+teacher softmax temperature parameter τt . In this table,                           Random weights           22.0
+we observe that a temperature lower than 0.06 is required to                        Supervised               27.3
+avoid collapse. When the temperature is higher than 0.06,                           DINO                     45.9
+τt             0 0.02 0.04 0.06 0.08 0.04 → 0.07                                    DINO w/o multicrop       45.1
+k-NN top-1 43.9 66.7 69.6 68.7                 0.1          69.7                    MoCo-v2                  46.3
+                                                                                    BYOL                     47.8
+the training loss consistently converges to ln(K). However,                         SwAV                     46.8
+we have observed that using higher temperature than 0.06
+does not collapse if we start the training from a smaller value    the mass. We compare the Jaccard similarity between the
+and increase it during the first epochs. In practice, we use       ground truth and these masks on the validation images of
+a linear warm-up for τt from 0.04 to 0.07 during the first         PASCAL VOC12 dataset for different DeiT-S trained with
+30 epochs of training. Finally, note that τ → 0 (extreme           different frameworks. The properties that self-attention
+sharpening) correspond to the argmax operation and leads           maps from ViT explicitly contain the scene layout and, in
+to one-hot hard distributions.                                     particular, object boundaries is observed across different
+                                                                   self-supervised methods.
+Longer training. We observe in this table that longer train-
+ing improves the performance of DINO applied to DeiT-              Impact of the number of heads in DeiT-S. We study the
+Small. This observation is consistent with self-supervised         impact of the number of heads in DeiT-S on the accuracy and
+       DINO DeiT-S 100-ep 300-ep 800-ep                            throughput (images processed per second at inference time
+                                                                   on a singe V100 GPU). We find that increasing the number
+       k-NN top-1            70.9       72.8         74.5
+                                                                    # heads dim dim/head # params im/sec k-NN
+results obtained with convolutional architectures [12]. We
+note that in our experiments with BYOL on DeiT-S, training         6          384           64         21          1007    72.8
+longer than 300 epochs has been leading to worse perfor-           8          384           48         21          971     73.1
+mance compare our 300 epochs run. For this reason we               12         384           32         21          927     73.7
+report BYOL for 300 epochs in Tab. 2 while SwAV, MoCo-             16         384           24         21          860     73.8
+v2 and DINO are trained for 800 epochs.                            of heads improves the performance, at the cost of a slighlty
+                                                                   worse throughput. In our paper, all experiments are run with
+The teacher outperforms the student. We have shown                 the default model presented in [66], i.e. with 6 heads only.
+in Fig. 6 that the momentum teacher outperforms the student        E. Multi-crop
+with ViT and we show in this Figure that it is also the case
+with ResNet-50. The fact that the teacher continually out-           In this Appendix, we study a core component of DINO:
+                                                                   multi-crop training [10].
+                       60
+
+               val acc@1
+                       55                                          Range of scales in multi-crop. For generating the dif-
+                       50           Student                        ferent views, we use the RandomResizedCrop method
+                       45           Teacher                        from torchvision.transforms module in PyTorch.
+                       400                    100                  We sample two global views with scale range (s, 1) before
+                               epochs                                (0.05, s), (s, 1), s: 0.08 0.16 0.24 0.32 0.48
+performs the student further encourages the interpretation of       k-NN top-1               65.6   68.0    69.7    69.8   69.5
+DINO as a form of Mean Teacher [62] self-distillation. In-                              2
+                                                                   resizing them to 224 and 6 local views with scale sampled
+deed, as motivated in Tarvainen et al. [62], weight averaging      in the range (0.05, s) resized to 962 pixels. Note that we
+usually produces a better model than the individual models         arbitrarily choose to have non-overlapping scaling range for
+from each iteration [49]. By aiming a target obtained with a       the global and local views following the original design of
+teacher better than the student, the student’s representations     SwAV. However, the ranges could definitely be overlapping
+improve. Consequently, the teacher also improves since it is       and experimenting with finer hyperparameters search could
+built directly from the student weights.                           lead to a more optimal setting. In this table, we vary the pa-
+                                                                   rameter s that controls the range of scales used in multi-crop
+Self-attention maps from supervised versus self-                   and find the optimum to be around 0.3 in our experiments.
+supervised learning. We evaluate the masks obtained                We note that this is higher than the parameter used in SwAV
+by thresholding the self-attention maps to keep 80% of             which is of 0.14.
+Multi-crop in different self-supervised frameworks.                 multi-crop training on ResNet-50 where we also observe
+We compare different recent self-supervised learning frame-         the same behavior. Since integrating multi-crop training to
+works, namely MoCo-v2 [14], BYOL [28] and SwAV [10]                 BYOL is not the focus of this study we did not push that
+with DeiT-S/16 architecture. For fair comparisons, all mod-         direction further. However, we believe this is worth investi-
+                                                                    gating why multi-crop does not combine well with BYOL in
+  crops                  2 × 2242             2 × 2242 + 6 × 962
+                                                                    our experiments and leave this for future work.
+  eval          k-NN               linear     k-NN         linear
+                                                                    F. Evaluation Protocols
+  BYOL            66.6             71.4         59.8       64.8
+  SwAV            60.5             68.5         64.7       71.8     F.1     k-NN classification
+  MoCo-v2         62.0             71.6         65.4       73.4     Following the setting of Wu et al. [70], we evaluate the qual-
+  DINO            67.9             72.5         72.7       75.9     ity of features with a simple weighted k Nearest Neighbor
+                                                                    classifier. We freeze the pretrained model to compute and
+                                                                    store the features of the training data of the downstream task.
+els are pretrained either with two 2242 crops or with multi-
+                                                                    To classify a test image x, we compute its representation
+crop [10] training, i.e. two 2242 crops and six 962 crops for
+                                                                    and compare it against all stored training features T . The
+each image. We report k-NN and linear probing evaluations
+                                                                    representation of an image is given by the output [CLS] to-
+after 300 epochs of training. Multi-crop does not benefit all
+                                                                    ken: it has dimensionality d = 384 for DeiT-S and d = 768
+frameworks equally, which has been ignored in benchmarks
+                                                                    for ViT-B. The top k NN (denoted Nk ) are used to make a
+considering only the two crops setting [15]. The effective-
+                                                                    prediction via weighted    voting. Specifically, the class c gets
+ness of multi-crop depends on the considered framework,                               P
+                                                                    a total weight of i∈Nk αi 1ci =c , where αi is a contribution
+which positions multi-crop as a core component of a model
+                                                                    weight. We use αi = exp(Ti x/τ ) with τ equals to 0.07 as
+and not a simple “add-ons” that will boost any framework the
+                                                                    in [70] which we do not tune. We evaluate different values
+same way. Without multi-crop, DINO has better accuracy
+                                                                    for k and find that k = 20 is consistently leading to the best
+than other frameworks, though by a moderate margin (1%).
+                                                                    accuracy across our runs. This evaluation protocol does not
+Remarkably, DINO benefits the most from multi-crop train-
+                                                                    require hyperparameter tuning, nor data augmentation and
+ing (+3.4% in linear eval). Interestingly, we also observe
+                                                                    can be run with only one pass over the downstream dataset.
+that the ranking of the frameworks depends on the evaluation
+protocol considered.
+                                                                    F.2     Linear classification
+Training BYOL with multi-crop. When applying multi-                 Following common practice in self-supervised learning, we
+crop to BYOL with DeiT-S, we observe the transfer perfor-           evaluate the representation quality with a linear classifier.
+mance is higher than the baseline without multi-crop for            The projection head is removed, and we train a supervised
+the first training epochs. However, the transfer performance        linear classifier on top of frozen features. This linear clas-
+                                                                    sifier is trained with SGD and a batch size of 1024 during
+                          65
+                                                                    100 epochs on ImageNet. We do not apply weight decay.
+
+              k-nn val top-1
+                          60                                        For each model, we sweep the learning rate value. Dur-
+                          55
+                                            w/o mc                  ing training, we apply only random resizes crops (with de-
+                          50
+                                            w/ mc                   fault parameters from PyTorch RandomResizedCrop)
+                          45                                        and horizontal flips as data augmentation. We report central-
+                               0     100 200         300
+                                       epochs                       crop top-1 accuracy. When evaluating convnets, the common
+                                                                    practice is to perform global average pooling on the final
+growth rate is slowing down and declines after a certain            feature map before the linear classifier. In the following, we
+amount of training. We have performed learning rate, weight         describe how we adapt this design when evaluating ViTs.
+decay, multi-crop parameters sweeps for this setting and
+systematically observe the same pattern. More precisely, we         DeiT-S representations for linear eval. Following the
+experiment with {1e−5 , 3e−5 , 1e−4 , 3e−4 , 1e−3 , 3e−3 } for      feature-based evaluations in BERT [17], we concatenate
+learning rate base values, with {0.02, 0.05, 0.1} for weight        the [CLS] tokens from the l last layers. We experiment
+decay and with different number of small crops: {2, 4, 6}.                concatenate l last layers    1      2      4      6
+All our runs are performed with synchronized batch normal-
+                                                                          representation dim          384    768    1536   2304
+izations in the heads. When using a low learning rate, we
+                                                                          DeiT-S/16 linear eval       76.1   76.6   77.0   77.0
+did not observe the performance break point, i.e. the trans-
+fer performance was improving continually during training,          with the concatenation of a different number l of layers and
+but the overall accuracy was low. We have tried a run with          similarly to [17] we find l = 4 to be optimal.
+ViT-B representations for linear eval. With ViT-B we
+did not find that concatenating the representations from the
+last l layers to provide any performance gain, and consider
+the final layer only (l = 1). In this setting, we adapt the
+ pooling strategy       [CLS] tok. concatenate [CLS] tok.
+                           only    and avgpooled patch tok.
+ representation dim        768                1536
+ ViT-B/16 linear eval      78.0               78.2
+pipeline used in convnets with global average pooling on the
+output patch tokens. We concatenate these pooled features
+to the final [CLS] output token.
+G. Self-Attention Visualizations
+   We provide more self-attention visualizations in Fig. 8
+and in Fig. 10. The images are randomly selected from
+COCO validation set, and are not used during training of
+DINO. In Fig. 8, we show the self-attention from the last
+layer of a DINO DeiT-S/8 for several reference points.
+H. Class Representation
+   As a final visualization, we propose to look at the distribu-
+tion of ImageNet concepts in the feature space from DINO.
+We represent each ImageNet class with the average feature
+vector for its validation images. We reduce the dimension
+of these features to 30 with PCA, and run t-SNE with a
+perplexity of 20, a learning rate of 200 for 5000 iterations.
+We present the resulting class embeddings in Fig. 11. Our
+model recovers structures between classes: similar animal
+species are grouped together, forming coherent clusters of
+birds (top) or dogs, and especially terriers (far right).
+                     DINO                        Supervised                                 DINO                       Supervised
+
+
+
+
+Figure 10: Self-attention heads from the last layer. We look at the attention map when using the [CLS] token as a query for the different
+heads in the last layer. Note that the [CLS] token is not attached to any label or supervision.
+                                                                                                                                  chickadee goldfinch
+                                                                                                                                             junco
+                                                                                                                                         sulphur-crested   bee eater lorikeet   African grey
+                                                                                                                                                   bulbul cockatoo
+                                                                                                                                                  jay        jacamar macaw
+                                                                                                                                                                               toucan ruddy turnstonered-backed sandpiper
+                                                                                                                                       brambling         hummingbird
+                                                                                                                                                           robin    kinghornbill
+                                                                                                                                                                         penguin
+                                                                                                                          indigo bunting                             kite European   redshank     dowitcher
+                                                                                                                                       house finch coucalmagpie                 peacock gallinule
+                                                                                                                                                                                         drake American coot    red-breasted merganser
+                                                                                                                                               bald eagle                cock
+                                                                                                                                                                            hen
+                                                                                                                                          black grouse
+                                                                                                                                                         oystercatchervulture ostrichgoose            albatross black swan
+                                                                                                                                                                           bustard
+                                                                                                                                                       water ouzel ptarmigan                     pelican
+                                                                                                                                                                     quail      blackcrane                   flamingo
+                                                                                                                                                                                       stork little blue heron
+                                                                                                                                                                                                       American egret
+                                                                                                                                                               partridge
+                                                                                                                                                   prairie chicken
+                                                                                                                                     great grey owl                       bittern limpkin          spoonbill
+                                                                                                                                                                   ruffed grouse         white stork
+
+
+
+
+                                                                                                                                                                                                                                                                                 orangutan
+                                                                                                                                                                                                                                                                     baboon
+                                                                                                                                                                                                                                                        macaque                   gorilla         chimpanzee
+                                                                                   garter snake                                                                                                                                                                     patas gibbon         siamang
+                                                                         sidewinder            king snake                                                                                                                                  proboscis monkey                 langur
+                                                                                                                                                                                                                                    squirrel monkey               guenon                  spider monkey
+                                        horned viper
+                                                       hognose snake                      night snake ringneck snake                                                                                                                                three-toed sloth titi capuchin                        howler monkey
+                                                           diamondback rock  python                     thunder    snake                                                                                                                                                    marmoset          colobus
+                                        boa constrictor                               Indian cobra                                                                                                                                                                                    indri cat
+                                                                                                                                                                                                                                                                                Madagascar
+                                                              water snake  green mamba              green snake                                                                                                                                                        koala                        sloth  bear
+                                                                                              vine snake                                                                                                                                           Americanlesserblackpanda
+                                                                                                                                                                                                                                                                          bear
+                                                                                                                                                                                                                                                   echidna                            giant panda                                                                                         Border terrier
+                                                                                green lizard                                                                                                                                                                   beaver badger    polecat     skunk brown bear                                                                 affenpinscher
+                                                                                                                                                                                                                                                                                                                                                                giant schnauzer
+                                                                                                                                                                                                                                                                                                                                                                                                      miniature schnauzer
+                                                                                                                                                                                                                                                                                                                                                                                            Scotch terrier          Norwich terrier
+                 European fire salamander                      alligator   lizard  whiptail     American     chameleon                                                                                                                               porcupine        weasel       black-footed     ferret                                Bouvier des Flandres Irish water spaniel                          standard schnauzer
+                                          spotted salamander                                   tree  frog                                                                                                                                mongoose                otter       mink         guinea pig           curly-coated     retriever
+                                                           common newt eft agama           African chameleon                                                                                                                                           marmotmeerkat wombat                      Angora                                schipperke          Kerry blue terrier                 Irish terrier       Australian terrier
+                                                                                                                                                                                                                                                                                    hamster
+                                                                                                                                                                                                                                                                              fox squirrel                           Tibetan   mastiff        groenendael                                 Airedale         cairn         silky terrier
+                                                                 banded tailed
+                                                                            gecko frog frilled lizard common iguana                                                                                                                                                                                                                                  Newfoundland
+                                                                                                                                                                                                                                                  wood rabbit wallaby                          Persian cat ice bear flat-coated          retrieverwheaten
+                                                                                                                                                                                                                                                                                                                                     soft-coated                 terrier Afghan IrishLakeland  terrier
+                                                                                                                                                                                                                                                                                                                                                                                              Yorkshire
+                                                                                                                                                                                                                                                                                                                                                                                       wolfhound
+                                                                                                                                                                                                                                                                                                                                                                                       hound otterhound
+                                                                                                                                                                                                                                                                                                                                                                                                               Norfolk terrier
+                                                                                                                                                                                                                                                                                                                                                                                                          terrier   Tibetan terrier
+                                             American alligator                    bullfrog                   Komodo dragon                                                                                                                                      hareSiamese cat                         Arctic fox keeshond    Leonberg Sussex wire-haired
+                                                                                                                                                                                                                                                                                                                                                         spanielScottish   deerhound
+                                                                                                                                                                                                                                                                                                                                                                        Gordon                               briard Shih-Tzu
+                                                                    box turtle           African    crocodile                                                                                                          sea lion                                                       Egyptian     cat                                      chow                       fox terriersetter Dandie Dinmont
+                                                                                                                                                                                                                                                                                                                                                                                                      komondor Lhasa
+                                                                                                                                                                                                                                                                                           grey  fox                                           Samoyed                  Old English    sheepdog
+                                                                    terrapin
+                                                                                mud turtle
+                                                                                                 Gila monster
+                                                                                                                                                                                                                               hippopotamus
+                                                                                                                                                                                                                      triceratops            hog              hyenacougar
+                                                                                                                                                                                                                                                                             tiger cat
+                                                                                                                                                                                                                                                                                      tabby          coyote white wolf  timber wolf Pekinese       goldensetter
+                                                                                                                                                                                                                                                                                                                                                    Irish    retriever
+                                                                                                                                                                                                                                                                                                                                                               kuvasz
+                                                                                                                                                                                                                                                                                                                                                                       cocker spaniel
+                                                                                                                                                                                                                                                                                                                                                                                      Bedlington terrier
+                                                                                                                                                                                                                                                                                                                                                                                                               Sealyham
+                                                                                                                                                                                                                                                                                                                                                                                                      West Highland
+                                                                                                                                                                                                                                                                                                                                                                                                                       Maltese dog
+                                                                                                                                                                                                                                                                                                                                                                                                                          terrier
+                                                                                                                                                                                                                                                                                                                                                                                                                        white  terrier
+                                                                                                                                                                                                                                                                  dog lynx cheetahred foxdhole red wolf Pomeranian                                      borzoi
+          tiger beetle
+                      weevil                    black and gold garden spider
+                                                                                       armadillo
+                                                                                                  axolotl                                                                                                                           warthogAfrican wild  boar
+                                                                                                                                                                                                                                                      hunting
+                                                                                                                                                                                                                              tusker bison ram llama lion
+                                                                                                                                                                                                                                                                                                                                   Great Pyrenees
+                                                                                                                                                                                                                                                                                                           Shetland sheepdogmalamuteSaint          collie English setterclumber
+                                                                                                                                                                                                                                                                                                                                                                                   miniature poodle          toy poodle
+                                                                                                                                                                                                                                                                                                                                                                                                    standard poodle
+ground           cricket
+        beetlebeetle             garden barn
+                                         spiderspider leatherback turtle                                    tench                                                                               African elephant                                                           tiger Norwegian     kit fox
+                                                                                                                                                                                                                                                                                                     elkhound      dingo                               Bernard
+                                                                                                                                                                                                                                                                                                                                                     Border    collie          Welsh springer spaniel
+long-horned             black widow                                           loggerhead     platypus                   barracouta                                                                               Indian   elephant                     ibex     zebra           snow leopard                                             papillon
+                                                                                                                                                                                                                                                                                                                            Eskimo dog Japanese spaniel Blenheim spaniel
+grasshopper cicada ant                            wolf spider dung   beetle           eel              coho                                                                                                                    water   buffalo       Arabian    camel jaguarleopard        German     shepherd
+                                                                                                                                                                                                                                                                                                             malinois                                                                 Brittany  spaniel
+            mantis       fly tick tarantulacentipede                                             gar           sturgeon                                                                                                                        bighorn                                                             Siberian husky
+     leafhopper     ladybug leaf
+                rhinoceros   beetlebeetle   isopod spiny lobstersea snakedugong                      tiger shark            great white shark                                                                                      oxcart ox
+                                                                                                                                                                                                                                             sorrel     impala gazelle                                                           PembrokeCardigan              English springer
+                                                                                                                                                                                                                                                                                                                                                  Bernese mountain dog
+walking stick                      cockroach rockseacrab                           puffer stingray
+           lacewing                                            cucumber            brain coral scuba hammerhead
+                                                                         electric ray                                                                                                                                        horse cart hartebeest                                                                              dogsled beagle            bassethound Appenzeller
+harvestman dragonflyspider web           hermit crab
+                                   scorpion
+                                                                starfish
+                                                        trilobite flatworm rock beauty
+                                                     chiton                                    goldfish
+                                                                                                               diver                                                                                                                                                                                                                   Saluki
+                                                                                                                                                                                                                                                                                                                  English foxhoundwhippet              Walker
+      damselfly             bee fiddler crabcrayfish             honeycomb coral reef jellyfish              snorkel                                                                                                                                                                                                       Ibizan houndbasenjidalmatian               EntleBucher
+                                            American                           sea slug                                                                                                                                                                                                                                                                      Greater Swiss Mountain dog
+                Dungeness crab                 king  crablobsterconch             sea sea
+                                                                                               anemone fish
+                                                                                           anemone
+                                                                                       urchin
+                                                                                                                                                                                                                                                                                                                        muzzle
+                                                                                                                                                                                                                                                                                                            Chihuahua Bostontoy
+                                                                                                                                                                                                                                                                                                                                                          bluetick
+                                                                                                                                                                                                                                                                                                                                                         Italian greyhound German short-haired pointer
+                                                          chamberedlionfish
+                                                           slug           nautilus                                                                                                                                                                                                                                                     bullterrier
+                                                                                                                                                                                                                                                                                                                                                Dobermankelpieminiature   pinscher
+                                           stinkhorn             snail                                                                                                                                                                                                         Staffordshire bullterrier French bulldog                      boxer                Rottweiler
+                            admiral                                                                                                                                                                                                                                                                      Brabancon griffon                pug       Great Dane                black-and-tan coonhound
+                                                       bolete agaric                                                                                                                                                                                                                                                     Mexican hairless redbone
+                  lycaenid monarch earthstar                     mushroom                                                                                                                                                                                                                                                                              American Staffordshire terrier
+cabbage butterfly                   cardoon coral fungus                           gyromitra                                                                                                                                                                                                                                    bull mastiff              bloodhound                         Labrador retriever
+                            ringletdaisy     acorn                 hen-of-the-woods                                                                                                                                                                                                                                                            vizsla               Chesapeake Bay retriever
+         sulphur butterfly               hip                jackfruit                                                                                                                                                                                                                                               Rhodesian     ridgeback          Weimaraner
+              yellow ladys slipper                  buckeyepineapple
+                                             artichoke
+                                    custard apple head pot        cabbage
+                                               broccoli                     cauliflower
+                               strawberry fig corn ear
+                         bell pepper orange pomegranate zucchini
+                                                                     cucumber
+                  Granny Smith lemon               acorn
+                                                      banana squash
+                               spaghetti squash
+                                                     butternut squash
+                                             pretzel
+                                     hotdog French loaf
+                    cheeseburger             bagel dough                                                                                       dishrag                                         wig
+                                    burrito potpie                        rotisserie                                                                    mitten                  mortarboard brassiere
+                          meat loaf                    ice cream                       butcher shop                                                wool stole cardigan Windsor tie
+                                     pizza plate    mashed potato  chocolate sauce            grocery store                        handkerchiefponcho              sweatshirt     bow tie
+                         carbonara         guacamole                    restaurant                                                                           bonnet       jersey                        lab coat                        maillot
+                                    soup bowl              hot pot                    bakery                           Christmas stocking pillow velvet                      fur coat abaya                                                     bikini bathing cap
+                                                                  frying pan                                                                                         overskirt gown suit
+                           consomme trifle                  wok             Dutch oven                                         bath towel
+                                                                                                                                            teddy bib apron  vestment
+                                                                                                                                                           sockjean hoopskirt cloak                  coat gown saxoboe
+                                                                                                                                                                                          trenchacademic                                      maillot swimming trunks
+                                              Crock Pot                                                                                                                           groomminiskirt           French    horn             bassoon
+                                                               caldron potters wheel                                                       sleeping bag              pajamakimono                               cornet trombone parallel bars
+                                                                                                                                                 diaper  feather    boa           uniform pickelhaube
+                                                                                                                                                                       military sarong                               flutecello balance beam horizontal bar
+                                                                                                                       jack-o-lantern                                                                         bearskin                                                           ping-pong ball
+                                                                                                                                           plastic bag
+                                                                                                                                                        shower cap
+                                                                                                                                                                   neck bracecowboy      bulletproof       panpipe
+                                                                                                                                                                                                         vest
+                                                                                                                                                                                                      accordion                   banjo
+                                                                                                                                                                                                                      violin acoustic     guitarvolleyball racket ballplayer
+                                                                                                                                                                                           hat carousel         harpelectric
+                                                        espresso                                                                                        ice lolly        mask sombrero                                 marimbaguitar                basketball            rugby ball
+                                                                                                                                                                                                                                                                  baseball soccer ballgolf ball
+                                                                    mixing    bowl                nematode                          chain mail                   pinwheel cowboy boot steel               rifledrum
+                                                                                                                                                                                                                                 drum
+                                                                                                                                                                                                                                     football helmet
+                                                    eggnog                       candle                                    bolo tie           nail hatchet                    ki mask assault rifle                                                      puck                   tennis ball
+                                  measuring cup                cup
+                                                                coffeevase
+                                                                         mug         piggy bank strainer spindle necklace             hook knot backpack        sunglasses           cuirass breastplate
+                                                                                                                                                                              sunglass                               torchstage                               croquet ball
+                                                                                                Petri dish maraca                                                      seat belt                               bubble
+                                   beer glass beaker pitcher whiskey        teapot jugmortar                                                chain
+                                                                                                                                   safety pin clogLoafer mailbag oxygen
+                                                                                                             traybottlecaphair slide                                               gasmask                crutch bowumbrella unicycle
+                                                                                                                                                                                                                                                ski
+                                             red wine goblet                      bucket                ladle
+                                                                                                           matchstick  ocarina pick            running shoe harmonica                     mask                   swing
+                                                    coffeepot          water   jug      wooden     spoon         quill                   sandal                                                reel plunger stretcher            maypole          mountain      bike   snowmobile
+                                                                                                                         paintbrushbuckle knee pad                                     binoculars
+                         beer bottlecocktail   shaker                             saltshaker spatula
+                                                                     soap dispenser
+                                                                                                                   syringe lipstick padlock
+                                                                                                                                                      stethoscope microphone          punching bag                                            bicycle-built-for-two
+                                                                                                                                                                                                                                                       bobsled
+                                     pop bottle wine bottle           nipple            hourglass cleaver
+                                                                                  thimble
+                                                                                                                                       Band Aid               hand blower tripod                                broom
+                                                                                                                                                                                                       pool table         shovel
+                                                                                                                                                                                                                                tricycle
+                                                                                                                                                                                                                                            moped
+                                              pill bottlelotion           water bottle screwdriver         drumstick face powder             pencil   boxpurse
+                                                                                                                                                  wallet              power drill
+                                                                                                                                                                                   vacuumdumbbell chain sawjinrikisha motor go-kart
+                                                               sunscreen mousetrap    pencil     hammer loupelighter
+                                                                                               sharpener                                envelope       packet            book    jacket   barbell                                                    scooter
+                                                  perfume                                                  plane
+                                                                                                             letter opener pen  rubber   eraser                  comic book                                                        lawn mower
+                                                                          hair spray                holster scabbardfountain whistle ballpoint   menu
+                                                                                                                                                    crossword      puzzle
+                                                                                                                                                                        jigsaw    puzzle
+                                                                                                                                                                                swab                                       barrow
+                                                                                                                        can opener rulebinderabacus                     doormat shopping basketmilk can               apiary plow cannon                           cliff              grey whale
+                                                                                                             corkscrew              slide rule web site prayer rughamper                                                                                              promontory                     killer whale
+                                                                                                                                                                                                                                                                                                         paddle
+                                                                                                                           screw                                                                       barrel                    lumbermill             cliff dwelling valley
+                                                                                                  revolver                                                                                   rain barrel ashcan crate                           stone wall             alp seashore sandbar                       canoe
+                                                                                                                                           chime       bathtub                                                                         worm    fence            megalith                lakeside
+                                                                                                                                   shield                        tub          table lamp                                          park bench mountain              tent      volcano         breakwater
+                                                                                                                                                 washbasin          lampshade               bassinet                      picket   fence                      hay     geyser damwreck schooner yawl
+                                                                                             analog clock wall clock             gong coil                toilet tissue         cradleshower curtain upright     greenhouse                      thatch
+                                                                                                                                                                                                                                                              rapeseed paddlewheel                       gondola catamaran    trimaran
+                                                                                                        barometer           electric fan spotlight   toilet  seat   paper towel              grand    piano         chainlink    fence
+                                                                                                                                                                                                                                       patio yurt barn
+                                                                                                                                                                                                                                                      maze          boathouse               pier      dock    pirate
+                                                                                                                                                                                                                                    birdhousesuspension                               steel arch    bridge          lifeboat speedboat
+                                                                                                 odometer magnetic      oil filter waffledisk
+                                                                                                                               compasscrash ironbrakescalecarton    studiochest
+                                                                                                                                                                                  quilt crib
+                                                                                                                                                                            couchmosquito           window screen                          tile roof       polebridge            beacon
+                                                                                                                                                                                                                                                                   solar dishdrilling         crane         fireboat
+                                                                                                         stopwatch                               helmet        radiator
+                                                                                                                                                            four-poster                          netscreen theater curtain
+                                                                                                                                                                                              fire                                                 totem    pole         fountain        platform
+                                                                                  combination lock                                             iron                                                                                     brass         radio telescope flagpole submarine                        liner container ship
+                                                                                                      digital watch dial      telephone
+                                                                                                                          espresso         sewing plate
+                                                                                                                                       maker         machinerack window shade           shoji bannister manhole cover                          sundial                                        airshipaircraft carrier
+                                                                                                                  lens cap              toaster space heater stove           wardrobe                            prison                pedestal                 planetarium
+                                                                                                                                                                                                                                                        obelisktower
+                                                                                                                                                                                                                                                        water                balloonprojectile
+                                                                                                       reflex camera joystick switch                                  barber chair
+                                                                                                                                                               dishwasher
+                                                                                                                                                           washer                   chest slidingfolding
+                                                                                                                                                                                                            rocking    chair
+                                                                                                                                                                                                              chairguillotine     monasterybell cote                parachute missilewarplane airliner
+                                                                               computer keyboard                     space    bar typewriter       microwave medicine
+                                                                                                                                                keyboard                   chiffonier
+                                                                                                                                                                                    dining   table    door                    throne         church  castle     viaduct
+                                                                                                                                                                                                                                                             stupa
+                                                                                                                                                                                                                                                        palace
+                                                                                                                                                                                                                                                                                                   wing
+                                                                                                                                                                                            china   cabinet shopping cart altar                                                    space shuttle
+                                                                                                     carpenters kit            modemloudspeaker            refrigeratorfile bookcase
+                                                                                                                                                    television                                  turnstile
+                                                                                                                                                                                                 library barbershop                      vault                   mosque                                  bullet train
+                                                                                              remote control hard disccassettedigital clock       mouse        home theater
+                                                                                                                                                             screen                                                               organ dome
+                                                                          hand-held computer Polaroid cameraiPod                                       monitor                 shoe shop tobaccobookshop
+                                                                                                cellular telephone
+                                                                                                                                        projector
+                                                                                                                                             notebook
+                                                                                                                                                   laptop entertainment center          toyshop slotshop scoreboard traffic light triumphal arch
+                                                                                                                  cassette player     tape  player   desktopdesk computer       confectionery                   cinema      street sign                                                                       tractor
+                                                                                                                                  radio CD player   printer                            vendinggas      pump
+                                                                                                                                                                                                   machine                                                                                         thresher tank
+                                                                                                                  oscilloscope safe                                               pay-phone                       mailbox
+                                                                                                                                                           photocopier
+                                                                                                                                                                          cash machine                                    parking meter                                                      harvester half           track
+                                                                                                                                                                                                                                                                    steam locomotive                   amphibian                 Model T
+                                                                                                                                                                                                                                                                                                  forklift snowplowgolfcart
+                                                                                                                                                                                                                                                          electric locomotive freight car trailer truck jeep racer carcar                       mirror
+                                                                                                                                                                                                                                                                                                                                            wheel
+                                                                                                                                                                                                                                                                                  passenger car                    tow   cab
+                                                                                                                                                                                                                                                                                                                         truck
+                                                                                                                                                                                                                                                                                                                             sports  car
+                                                                                                                                                                                                                                                                    mobile home garbage truckmoving van beachgrille               wagon
+                                                                                                                                                                                                                                                                                               fire engine
+                                                                                                                                                                                                                                                                                      school bus                limousine minivanpickup      convertible
+                                                                                                                                                                                                                                                                                 streetcar trolleybus                police van
+                                                                                                                                                                                                                                                        recreational vehicle                              minibus
+                                                                                                                                                                                                                                                                                                                    ambulance
+
+
+
+
+Figure 11: t-SNE visualization of ImageNet classes as represented using DINO. For each class, we obtain the embedding by taking the
+average feature for all images of that class in the validation set.
+

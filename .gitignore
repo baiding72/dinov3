@@ -16,3 +16,10 @@ dist/
 
 # Ignore vscode directory
 .vscode/
+
+# macOS
+.DS_Store
+
+# 嵌套克隆的工具仓库（nuscenes-download 含本地凭据，勿提交）
+tools/nuscenes-devkit/
+tools/nuscenes-download/
