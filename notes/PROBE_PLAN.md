@@ -87,7 +87,25 @@ head: Linear（主指标）/ MLP-256（辅助，可选）
 - **同帧多条记录**：同一关键帧（sample_data_token）的多条 drivable mask 用 **OR 合并**成一张二值图。
 - **mask 下采样到 32×32**：与图像同一几何变换后，用面积平均（area-average）或与 patch 网格严格对齐的方式；
   禁止用会引入半像素偏移的 resize。
+- **已知病灶（2026-08-18 实测，最高嫌疑）**：val 关键帧的 grid positive fraction 呈 0/1 双峰
+  （56% 为 0、44% 为 1），而真实 drivable 占比应为连续分布 ~0.3–0.5（mini 实测 8 张 CAM_FRONT：
+  min 0.332 / mean 0.390 / max 0.478）。整图全 0 或全 1 说明目标网格被**图像级标量阈值**填充了，
+  典型错误写法：
+  ```
+  frac = mask_crop.mean()          # 整图平均 → 一个标量（≈0.45，贴着 0.5 两侧 → 56/44 双峰）
+  grid = (frac > 0.5)              # 一个 0/1 标量
+  grid = grid.broadcast_to(32, 32) # 广播成整张网格 → 全 0 或全 1
+  ```
+  等价错误：`adaptive_avg_pool2d(mask, (1, 1))` 或 `mask.mean(dim=(1,2,3))`。
+  正确做法：**逐格**面积平均 `adaptive_avg_pool2d(mask[None, None], (32, 32))` → 32×32 占比图 → 逐格 `> 0.5`。
+  该 bug 会把目标退化成"整图二分类"，线性头只能学图像级猜测，这正是官方 baseline=0.0274、续训=0 的直接原因。
 - **指标输出**：IoU + F1 + PR 一起报，不能只报 IoU。
+- **修复后断言（全部通过才算修好）**：
+  1. val 全部关键帧的 grid positive fraction 输出直方图：应为 0.2–0.6 的连续分布，**不允许出现 0.0 / 1.0**
+     （除个别极端图外）；
+  2. 全 val 均值落在 0.3–0.5（mini 实测 0.39）；
+  3. 单图单元测试：用 mini 的 debug_0 / debug_1 两张图，网格占比必须等于 **0.375 / 0.456**
+     （本机 `notes/debug_vis_nuimages.py` 的输出值），对不上就是变换或阈值仍有问题。
 - **验收**：官方 baseline 必须显著高于 0.0168；若修复后仍 <0.1，继续排查：
   特征层选择（是否末层 norm 后）、checkpoint 加载（teacher vs student、`backbone.` 前缀）。
 
