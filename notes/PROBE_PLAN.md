@@ -30,7 +30,9 @@
 
 ### 指标 2：object region classification（区域/全局指标）
 - 冻结 backbone，512×512；对每个 `object_ann.bbox` 取 bbox 内 patch token **均值池化**作为物体特征
-- 线性分类到 category（8 大类）
+- 线性分类到 category（**5 coarse**：vehicle / human / movable_object / static_object / animal，
+  由 category.json 的 name 首段聚合；细类共 24 个，总类别 25 个，其中 flat.driveable_surface 只出现在
+  surface_ann；object_ann 里罕见的 vehicle.ego 记录应过滤）
 - 训练集：v1.0-train 的 object_ann；评测：v1.0-val
 - 指标：**top-1 acc**（按 object 样本计）+ 可选 mAP
 
@@ -122,7 +124,7 @@ head: Linear（主指标）/ MLP-256（辅助，可选）
 
 ### 2.2 指标 2（object top-1）补基线
 
-- 输出 train/val 的 8 大类分布表；
+- 输出 train/val 的 5 coarse 分布表（附 24 fine 明细，尾类按 ≥100 实例过滤或单列）；
 - 输出"全猜多数类"基线 top-1（与官方 0.857 对照，判断该数字是否有信息量）；
 - 输出 **per-class accuracy + balanced accuracy**，禁止只报全局 top-1；
 - bbox→patch 选择可视化：原图 + bbox 框 + 被选中 patch 网格标亮，抽查 10 张；
@@ -181,7 +183,7 @@ sensor.json  → channel("CAM_FRONT" ...)
 - `mask` 是 pycocotools RLE 格式（`maskUtils.decode`）
 - **解码方式**：`counts` 是 base64 字符串，不能直接 `maskUtils.decode`，必须先用 `base64.b64decode` 再解；
   直接复用官方 devkit：`from nuimages.utils.utils import mask_decode`（内部已完成 b64decode + decode）
-- `category.json` 提供 `name`（8 大类）
+- `category.json` 提供 `name`（25 细类，首段聚合为 5 coarse）
 - 标注按 `sample_data_token` 与关键帧对齐
 
 ## 4. 代码结构（新建，位于 `dinov3/eval/nuimages/`）
@@ -245,7 +247,7 @@ Adapted (10k steps)           ?               ?                 ?
 - RLE mask 是原图分辨率 900×1600：resize 到 512 时用与图像一致的插值，避免 mask 与特征错位
 - bbox 是原图坐标：映射到 32×32 patch 网格时除以 16、clip 边界、空 bbox 丢弃
 - SSL 训练与 probe 训练同源（都用 v1.0-train）：A/B 协议一致即可接受，报告注明 caveat
-- 类别不平衡：drivable 占大头，必报 F1；object 按 8 大类聚合
+- 类别不平衡：drivable 占大头，必报 F1；object 按 5 coarse 聚合（vehicle≈49%），并报 per-class + balanced
 - `teacher_checkpoint.pth` 加载：eval 路径自动去掉 `backbone.` 前缀（`init_model_from_checkpoint_for_evals`）
 - 确认续训输出目录里有 5k/10k 的 `eval/<iter>/teacher_checkpoint.pth`
 
