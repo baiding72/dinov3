@@ -99,6 +99,17 @@ head: Linear（主指标）/ MLP-256（辅助，可选）
   等价错误：`adaptive_avg_pool2d(mask, (1, 1))` 或 `mask.mean(dim=(1,2,3))`。
   正确做法：**逐格**面积平均 `adaptive_avg_pool2d(mask[None, None], (32, 32))` → 32×32 占比图 → 逐格 `> 0.5`。
   该 bug 会把目标退化成"整图二分类"，线性头只能学图像级猜测，这正是官方 baseline=0.0274、续训=0 的直接原因。
+- **第一面板自检（原图+原始 mask 叠加，2026-08-18 实测判据）**：
+  数据事实（已实测）：surface_ann 只存在于关键帧；每个 CAM_FRONT 关键帧**恰好 1 条**
+  `flat.driveable_surface` 记录（train 13184/13184，val 3249/3249）；val 全分辨率 drivable 占比
+  min 0.079 / mean 0.303 / max 0.462，**不存在 0 或 1**。
+  因此服务器 debug 第一张图若出现"整图全绿 / 分界线在天上"，问题必在 mask 生成（变换之前），
+  按三条指纹定位：
+  1. 打印该关键帧 `sample_data_token` 对应的 surface_ann 记录数 → 必须恰好 1；
+  2. 打印该记录 `category_name` → 必须是 `flat.driveable_surface`；
+  3. 打印解码 mask 全分辨率占比 → 必须落在 0.08~0.46；=1.0 → RLE 解码错；0.6~0.8 → 串相机/尺寸错
+     （最常见：用 `sample_token` 而非 `sample_data_token` 关联，混入同一 sample 的其他相机 mask）。
+  黄金标准：同一记录分别用 devkit `mask_decode` 与实现解码，逐像素对比 **IoU 必须 = 1**。
 - **指标输出**：IoU + F1 + PR 一起报，不能只报 IoU。
 - **修复后断言（全部通过才算修好）**：
   1. val 全部关键帧的 grid positive fraction 输出直方图：应为 0.2–0.6 的连续分布，**不允许出现 0.0 / 1.0**
