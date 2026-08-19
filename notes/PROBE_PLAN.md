@@ -41,7 +41,8 @@
   判断续训是否过拟合必须同时看全局特征，故增加本指标
 - 冻结 backbone，512×512，取 **CLS token**（1024 维）
 - 线性头 `Linear(1024→8) + sigmoid`，**BCE 多标签**
-- 标签：该关键帧内出现的 object 类别集合（object_ann 的 category 聚合 → 8 维多标签向量）
+- 标签：该关键帧内、**bbox 与 512×512 crop 有交集**的 object 类别集合
+  （object_ann 的 category 聚合 → 5 维多标签向量；裁剪内口径，与指标 2 丢弃规则一致）
 - 训练集：v1.0-train 关键帧（channel==CAM_FRONT 且 is_key_frame，带 object_ann）；评测：v1.0-val
 - 指标：**mAP**（per-class AP 平均）+ 可选 top-1（最高概率类是否在标签集合中）
 - 与指标 1/2 的关系：patch 测 dense、CLS 测 global；三者任一在中间曲线上"先升后降"才是过拟合信号
@@ -132,9 +133,12 @@ head: Linear（主指标）/ MLP-256（辅助，可选）
 
 ### 2.3 指标 3（CLS mAP）补细节
 
-- 确认多热标签 = 该关键帧（channel==CAM_FRONT 且 is_key_frame）内 object_ann 全部类别聚合；
+- **标签聚合口径（写死）**：多热标签 = 该关键帧（channel==CAM_FRONT 且 is_key_frame）内、
+  **bbox 与 512×512 crop 有交集**的 object_ann 类别聚合（bbox 先经同一几何变换 + clip，
+  再做交集判定；crop 外物体不计入标签，与指标 2 的丢弃规则一致，避免"模型看不到却要预测"的不对称）；
 - 输出 **per-class AP 表**，不只看均值；
-- 验收：与已测 v1 值 0.678 / 0.574 一致，即认为实现正确，无需大改。
+- 验收：与已测 v1 值同量级（0.678 / 0.574 为全帧口径测得；裁剪内口径下 5 coarse 差异小、
+  数值可能略变，以重测值为准）。
 
 ### 2.4 修复后重测与决策闸门
 

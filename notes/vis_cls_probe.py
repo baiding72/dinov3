@@ -38,9 +38,6 @@ ch_by_cs = {c["token"]: sensors[c["sensor_token"]] for c in calibrated}
 
 sd = next(s for s in sample_data if s["filename"].endswith(IMG_NAME))
 objs = [a for a in object_ann if a["sample_data_token"] == sd["token"]]
-coarse_of = {a["token"]: category.get(a["category_token"], "?").split(".")[0] for a in objs}
-present = sorted({c for c in coarse_of.values()})
-multi_hot = [1.0 if c in present else 0.0 for c in COARSE_ORDER]
 
 
 def bbox_xyxy(a):
@@ -58,6 +55,20 @@ resized = np.asarray(Image.fromarray(img).resize((rw, rh), Image.BICUBIC))
 left = (rw - 512) // 2
 top = (rh - 512) // 2
 cropped = resized[top : top + 512, left : left + 512]
+
+
+def intersects_crop(a):
+    """True if the object bbox (after the same transform) intersects the 512x512 crop."""
+    x1, y1, x2, y2 = bbox_xyxy(a)
+    x1, y1 = x1 * scale - left, y1 * scale - top
+    x2, y2 = x2 * scale - left, y2 * scale - top
+    return x2 > 0 and y2 > 0 and x1 < 512 and y1 < 512
+
+
+coarse_of = {a["token"]: category.get(a["category_token"], "?").split(".")[0] for a in objs}
+full_present = sorted({c for c in coarse_of.values()})
+present = sorted({coarse_of[a["token"]] for a in objs if intersects_crop(a)})
+multi_hot = [1.0 if c in present else 0.0 for c in COARSE_ORDER]
 
 cmap = plt.get_cmap("tab10")
 class_color = {c: cmap(i % 10) for i, c in enumerate(COARSE_ORDER)}
@@ -78,7 +89,9 @@ for c in COARSE_ORDER:
     if c in present:
         handles.append(plt.Line2D([0], [0], color=class_color[c], lw=3, label=c))
 ax.legend(handles=handles, loc="upper right", fontsize=9)
-ax.set_title(f"1) original {W}x{H}: objects colored by coarse class\nclasses present: {present}")
+ax.set_title(f"1) original {W}x{H}: objects colored by coarse class\n"
+             f"label counts only classes whose bbox intersects the 512 crop\n"
+             f"full-frame: {full_present} | crop-in: {present}")
 ax.axis("off")
 
 # 2. crop + 32x32 grid + CLS concept
@@ -101,7 +114,7 @@ for k, c in enumerate(COARSE_ORDER):
     ax.add_patch(Rectangle((0.4, y - 0.35), 1.4, 0.7, fc="lightgreen" if val else "lightgray", ec="k"))
     ax.text(2.1, y, f"{c} = {int(val)}", fontsize=11, va="center")
 ax.text(0.4, len(COARSE_ORDER) + 0.2,
-        "3) label: multi-hot of classes present\n(aggregate object_ann of this keyframe)",
+        "3) label: multi-hot of classes present\n(bbox intersects the 512 crop only)",
         fontsize=9)
 ax.set_title("multi-hot label [5]")
 
@@ -150,17 +163,18 @@ ax.text(0.02, 0.97, "\n".join(lines), va="top", fontfamily="monospace", fontsize
 # 6. per-class presence stats for this frame
 ax = fig.add_subplot(gs[1, 2])
 from collections import Counter
-counts = Counter(coarse_of.values())
+counts = Counter(coarse_of[a["token"]] for a in objs if intersects_crop(a))
 lines = [f"{'class':<16} {'present':>7} {'objects':>8}"]
 for c in COARSE_ORDER:
     lines.append(f"{c:<16} {int(c in present):>7} {counts.get(c, 0):>8}")
 ax.text(0.02, 0.97, "\n".join(lines), va="top", fontfamily="monospace", fontsize=10)
-ax.set_title("6) this keyframe's class presence")
+ax.set_title("6) this keyframe's class presence (crop-in)")
 ax.axis("off")
 
 fig.suptitle(f"Metric 3 pipeline: CLS multi-label classification ({IMG_NAME})", fontsize=13)
 fig.tight_layout(rect=[0, 0, 1, 0.96])
 fig.savefig(OUT, dpi=110)
 print("saved", OUT)
-print("classes present:", present)
+print("classes present (full-frame):", full_present)
+print("classes present (crop-in):", present)
 print("multi-hot:", dict(zip(COARSE_ORDER, multi_hot)))
