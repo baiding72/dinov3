@@ -126,10 +126,26 @@ head: Linear（主指标）/ MLP-256（辅助，可选）
 ### 2.2 指标 2（object top-1）补基线
 
 - 输出 train/val 的 5 coarse 分布表（附 24 fine 明细，尾类按 ≥100 实例过滤或单列）；
-- 输出"全猜多数类"基线 top-1（与官方 0.857 对照，判断该数字是否有信息量）；
-- 输出 **per-class accuracy + balanced accuracy**，禁止只报全局 top-1；
+- **参与类规则（写死）**：train 实例 < 500 或 val 实例 < 100 的类丢弃并在报告中注明。
+  实测当前参与 3 类：vehicle（train 75k/val 17k）、human（36k/8.8k）、movable_object（4.4k/1.1k）；
+  static_object（330/90）、animal（28/16）丢弃；
+- **基线双口径**：top-1 多数类基线（vehicle≈46%）与 **balanced 基线 = 1/参与类数**（3 类 → 0.33），
+  分开标注，禁止跨口径直接对比；
+- 输出 **per-class accuracy + balanced accuracy**，禁止只报全局 top-1；balanced = per-class recall 均值；
+- **混淆矩阵（必出）**：官方 vs 每个 checkpoint，重点看大类（vehicle）错分去向——判断退化是
+  "细粒度混淆"（vehicle↔movable/human）还是"整体散掉"；
+- **幽灵 patch 修复（已发现，必改）**：crop 外的 bbox 不得映射到角落 patch 当作物体训练。
+  bbox 必须经同一几何变换后与 512×512 crop 做交集判定、clip 到 [0,512]，再 ÷16 到 [0,32]；
+  交集为空即丢弃（与 §2.3 指标 3 标签口径一致）；
 - bbox→patch 选择可视化：原图 + bbox 框 + 被选中 patch 网格标亮，抽查 10 张；
-- 验收：能明确回答"官方 0.857 是否等于多数类基线"。
+- 验收：能明确回答"官方 top-1 0.83 / balanced 0.81 相对基线（0.46 / 0.33）的真实余量"，
+  且每类计数 train ≥ val（按比例），无"train 比 val 少"的反常。
+
+> 关于"幽灵 patch"污染后的重跑：**不必重提 backbone 特征**——按 §3 的缓存设计，
+> 每图缓存的是 patch_feats [32,32,1024] 与 cls_feat [1024]，与 bbox 无关、未被污染；
+> 只需用修正后的 bbox 映射重生成 objects.pt，重跑池化 + 线性头 + 评测（指标 2），
+> 并用裁剪内口径重聚标签 + 重训 CLS 头（指标 3）。除非确认缓存里没有原始 patch 特征
+> 或图像变换本身被改过，才需要重新提取。
 
 ### 2.3 指标 3（CLS mAP）补细节
 
