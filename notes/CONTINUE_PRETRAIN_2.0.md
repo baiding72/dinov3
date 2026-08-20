@@ -2,7 +2,8 @@
 
 > v2 = v1 的受控对照，只改两处实验变量：**去掉 freeze** + **split 严格化（防泄漏）**，
 > 其余超参与 v1 完全一致。目的：判断 v1 的 probe 下滑由哪个因素引起
-> （修好指标后已确认：drivable IoU 0.97→0.78、obj top-1 0.82→0.62、CLS mAP 0.68→0.57）。
+> （修好 bbox 口径后已确认：仅 drivable IoU 明显退化 0.97→0.78；
+> obj top-1 与 CLS mAP 基本持平 ~0.69/~0.74，不作为 v2 的主判据）。
 > 仓库：facebookresearch/dinov3。只改数据集层与配置，**不动训练主循环**。
 
 ## 0. v1 基线（除两处改动外全部保持不动）
@@ -71,7 +72,9 @@ v1.0-test：CAM_FRONT 1,932 张      ← 已核实无标注；不碰
 
 - 不改 `train.py` / `ssl_meta_arch.py`；不引入 v1 之外的任何超参改动；
 - val/test 的 sample 不进 SSL（断言保护）；不用 v1 的 output_dir（防 resume 污染）；
-- 本期不加 GRAM anchoring（后续实验变量）。
+- 本期不加 GRAM anchoring（后续实验：v2+GRAM，官方 checkpoint 作冻结 Gram teacher，
+  `gram.use_loss=true, ema_teacher=false, rep_update=false, it_load_ema_teacher=-1` +
+  `crops.gram_teacher_crops_size=256`；等 v2 裸版结果出来再开）。
 
 ## 6. 交付物
 
